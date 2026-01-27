@@ -1,0 +1,60 @@
+# =========================
+# Python / Django
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+.env
+.env.*
+venv/
+.venv/
+ENV/
+env/
+pip-wheel-metadata/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+media/
+staticfiles/
+
+# Migrations cache
+*.sqlite3
+
+# =========================
+# Testing / Coverage
+# =========================
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+
+# =========================
+# Lint / Type check
+# =========================
+.mypy_cache/
+.ruff_cache/
+
+# =========================
+# Celery / Redis
+# =========================
+celerybeat-schedule
+celerybeat.pid
+
+# =========================
+# IDEs
+# =========================
+.vscode/
+.idea/
+.cursor/
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db

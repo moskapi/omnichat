@@ -1,0 +1,11 @@
+# Repo-level
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+.cursor/
+
+# Logs
+*.log
