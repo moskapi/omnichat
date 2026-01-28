@@ -9,3 +9,24 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtualenv
+venv/
+.venv/
+
+# Django local db (dev only)
+backend/db.sqlite3
+
+# Env
+.env
+.env.*
+
+# OS
+.DS_Store
+
