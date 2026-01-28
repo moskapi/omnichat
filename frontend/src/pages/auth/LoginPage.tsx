@@ -14,9 +14,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ApiException } from '@/lib/api';
 
 const loginSchema = z.object({
-  email: z.string().email('Email inválido'),
+  email: z.string().min(1, 'Informe seu email ou usuário'),
   password: z.string().min(6, 'Senha deve ter pelo menos 6 caracteres'),
 });
+
 
 type LoginFormData = z.infer<typeof loginSchema>;
 
@@ -39,12 +40,13 @@ export default function LoginPage() {
     setError(null);
 
     try {
-      const response = await authApi.login({
+      const user = await authApi.login({
         email: data.email,
         password: data.password,
       });
-      setUser(response.user);
-      navigate('/workspaces');
+      setUser(user);
+      navigate("/workspaces");
+      
     } catch (err) {
       if (err instanceof ApiException) {
         setError(err.message);
@@ -89,7 +91,7 @@ export default function LoginPage() {
                 <Label htmlFor="email">Email</Label>
                 <Input
                   id="email"
-                  type="email"
+                  type=""
                   placeholder="seu@email.com"
                   {...register('email')}
                   className={errors.email ? 'border-destructive' : ''}
