@@ -1,5 +1,7 @@
 from django.urls import path
 
+from . import views
+
 urlpatterns = [
-    # Endpoints entrarão aqui depois.
+    path("inbox/", views.inbox, name="webhooks-inbox"),
 ]
