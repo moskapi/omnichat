@@ -1,7 +1,7 @@
 from django.urls import path
 
-from . import views
+from .views import WebhookInboxView
 
 urlpatterns = [
-    path("inbox/", views.inbox, name="webhooks-inbox"),
+    path("inbox/", WebhookInboxView.as_view(), name="webhooks-inbox"),
 ]
