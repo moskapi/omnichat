@@ -3,15 +3,18 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { ArrowLeft, ArrowRight, Check, AlertTriangle, Loader2, Shield, Zap } from 'lucide-react';
 import { ChannelProvider } from '@/types/api';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 type WizardStep = 1 | 2 | 3;
+
+
 
 interface ChannelFormData {
   name: string;
@@ -39,6 +42,7 @@ export default function NewChannelPage() {
     riskAccepted: false,
     credentials: {},
   });
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const steps = [
     { number: 1, title: 'Nome' },
@@ -54,9 +58,17 @@ export default function NewChannelPage() {
         return formData.provider !== null && (formData.provider === 'whatsapp_official' || formData.riskAccepted);
       case 3:
         if (formData.provider === 'whatsapp_official') {
-          return formData.credentials.token && formData.credentials.phone_number_id && formData.credentials.webhook_verify_token;
+          return (
+            !!formData.credentials.token &&
+            !!formData.credentials.phone_number_id &&
+            !!formData.credentials.webhook_verify_token
+          );
         } else {
-          return formData.credentials.base_url && formData.credentials.instance_id && formData.credentials.api_key;
+          return (
+            !!formData.credentials.base_url &&
+            !!formData.credentials.instance_id &&
+            !!formData.credentials.api_key
+          );
         }
       default:
         return false;
@@ -64,12 +76,14 @@ export default function NewChannelPage() {
   };
 
   const handleNext = () => {
+    setErrorMessage(null);
     if (currentStep < 3) {
       setCurrentStep((currentStep + 1) as WizardStep);
     }
   };
 
   const handleBack = () => {
+    setErrorMessage(null);
     if (currentStep > 1) {
       setCurrentStep((currentStep - 1) as WizardStep);
     }
@@ -77,9 +91,44 @@ export default function NewChannelPage() {
 
   const handleSave = async () => {
     setIsSaving(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    navigate('/channels');
+    setErrorMessage(null);
+
+    // Map provider to correct backend values
+    let providerValue = formData.provider;
+    if (providerValue === 'evolution') {
+      providerValue = 'evolution';
+    } else if (providerValue === 'whatsapp_official') {
+      providerValue = 'whatsapp_official';
+    }
+
+    // Determine external_id based on provider
+    let external_id: string | undefined;
+    if (providerValue === 'whatsapp_official') {
+      external_id = formData.credentials.phone_number_id || undefined;
+    } else if (providerValue === 'evolution') {
+      external_id = formData.credentials.instance_id || undefined;
+    }
+
+    const payload: Record<string, any> = {
+      name: formData.name.trim(),
+      provider: providerValue,
+      is_active: true,
+    };
+    if (external_id) {
+      payload.external_id = external_id;
+    }
+
+    try {
+      await api.post('/channels/channels/', payload);
+      navigate('/channels');
+    } catch (err: any) {
+      // Try to get best possible error message
+      setErrorMessage(
+        err?.message ||
+        (typeof err === 'string' ? err : 'Ocorreu um erro ao criar o canal.')
+      );
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -139,6 +188,15 @@ export default function NewChannelPage() {
         ))}
       </div>
 
+      {/* Error Alert */}
+      {errorMessage && (
+        <Alert variant="destructive" className="mb-6 animate-fade-in">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Erro ao criar canal</AlertTitle>
+          <AlertDescription>{errorMessage}</AlertDescription>
+        </Alert>
+      )}
+
       {/* Step Content */}
       <Card>
         <CardContent className="pt-6">
@@ -197,12 +255,12 @@ export default function NewChannelPage() {
                   <label
                     className={cn(
                       'flex items-start gap-4 p-4 rounded-lg border-2 cursor-pointer transition-colors',
-                      formData.provider === 'evolution_api'
+                      formData.provider === 'evolution'
                         ? 'border-warning bg-warning/5'
                         : 'border-border hover:border-warning/50'
                     )}
                   >
-                    <RadioGroupItem value="evolution_api" className="mt-1" />
+                    <RadioGroupItem value="evolution" className="mt-1" />
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <Zap className="w-4 h-4 text-warning" />
@@ -217,7 +275,7 @@ export default function NewChannelPage() {
               </RadioGroup>
 
               {/* Risk Warning */}
-              {formData.provider === 'evolution_api' && (
+              {formData.provider === 'evolution' && (
                 <Alert variant="destructive" className="animate-fade-in">
                   <AlertTriangle className="h-4 w-4" />
                   <AlertTitle>Atenção: Risco de Bloqueio</AlertTitle>

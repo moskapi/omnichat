@@ -11,7 +11,7 @@ export interface Workspace {
 }
 
 // Channel types
-export type ChannelProvider = 'whatsapp_official' | 'evolution_api';
+export type ChannelProvider = 'whatsapp_official' | 'evolution';
 export type ChannelStatus = 'connected' | 'pending' | 'error' | 'disconnected';
 
 export interface Channel {

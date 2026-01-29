@@ -1,59 +1,75 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { EmptyState, StatusBadge } from '@/components/common';
-import { Plus, Radio, MoreVertical, Smartphone, RefreshCw } from 'lucide-react';
+import { Plus, Radio, MoreVertical, Smartphone } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Channel, ChannelStatus } from '@/types/api';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { api } from '@/lib/api';
 
-// Mock channels
-const mockChannels: Channel[] = [
-  {
-    id: 'ch-1',
-    name: 'WhatsApp Principal',
-    provider: 'whatsapp_official',
-    status: 'connected',
-    phone_number: '+55 11 99988-7766',
-    created_at: '2024-01-15T10:00:00Z',
-    last_sync_at: new Date().toISOString(),
-  },
-  {
-    id: 'ch-2',
-    name: 'WhatsApp Suporte',
-    provider: 'evolution_api',
-    status: 'pending',
-    phone_number: '+55 11 98877-6655',
-    created_at: '2024-02-20T14:30:00Z',
-  },
-  {
-    id: 'ch-3',
-    name: 'WhatsApp Vendas',
-    provider: 'whatsapp_official',
-    status: 'error',
-    phone_number: '+55 21 97766-5544',
-    created_at: '2024-03-10T09:15:00Z',
-    error_message: 'Token expirado. Por favor, reconecte o canal.',
-  },
-];
-
-const statusConfig: Record<ChannelStatus, { label: string; type: 'success' | 'warning' | 'error' | 'default' }> = {
-  connected: { label: 'Conectado', type: 'success' },
-  pending: { label: 'Pendente', type: 'warning' },
-  error: { label: 'Erro', type: 'error' },
-  disconnected: { label: 'Desconectado', type: 'default' },
+type ApiChannel = {
+  id: string;
+  name: string;
+  provider: string;
+  external_id?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
+const statusConfig = {
+  ativo: { label: 'Ativo', type: 'success' as const },
+  inativo: { label: 'Inativo', type: 'default' as const },
+};
+
+function getProviderLabel(provider?: string) {
+  switch (provider) {
+    case 'whatsapp_official':
+      return 'WhatsApp Oficial';
+    case 'evolution':
+      return 'Evolution';
+    default:
+      return provider || '—';
+  }
+}
+
 export default function ChannelsPage() {
-  const [channels] = useState<Channel[]>(mockChannels);
+  const [channels, setChannels] = useState<ApiChannel[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+    setIsLoading(true);
+    setError(null);
+    api
+      .get<ApiChannel[]>('/channels/channels/')
+      .then((data) => {
+        if (!mounted) return;
+        setChannels(data);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Erro ao carregar canais. Tente novamente.'
+        );
+        setIsLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -71,8 +87,33 @@ export default function ChannelsPage() {
         </Button>
       </div>
 
-      {/* Channels List */}
-      {channels.length === 0 ? (
+      {/* Error State */}
+      {error ? (
+        <Card>
+          <CardContent className="pt-6">
+            <EmptyState
+              icon={Radio}
+              title="Erro ao carregar canais"
+              description={error}
+              action={
+                <Button onClick={() => window.location.reload()}>
+                  Tentar Novamente
+                </Button>
+              }
+            />
+          </CardContent>
+        </Card>
+      ) : isLoading ? (
+        <Card>
+          <CardContent className="pt-6">
+            <EmptyState
+              icon={Radio}
+              title="Carregando canais..."
+              description="Aguarde enquanto carregamos seus canais do WhatsApp."
+            />
+          </CardContent>
+        </Card>
+      ) : channels.length === 0 ? (
         <Card>
           <CardContent className="pt-6">
             <EmptyState
@@ -91,7 +132,8 @@ export default function ChannelsPage() {
       ) : (
         <div className="grid gap-4">
           {channels.map((channel) => {
-            const status = statusConfig[channel.status];
+            const isActive = channel.is_active;
+            const status = isActive ? statusConfig.ativo : statusConfig.inativo;
             return (
               <Card key={channel.id} className="hover:shadow-card-hover transition-shadow">
                 <CardContent className="flex items-center justify-between p-5">
@@ -105,27 +147,23 @@ export default function ChannelsPage() {
                         <StatusBadge
                           status={status.type}
                           label={status.label}
-                          pulse={channel.status === 'connected'}
+                          pulse={isActive}
                         />
                       </div>
-                      <p className="text-sm text-muted-foreground">{channel.phone_number}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {channel.provider === 'whatsapp_official' ? 'WhatsApp Oficial' : 'Evolution API'}
-                        {channel.last_sync_at && ` • Última sinc: ${format(new Date(channel.last_sync_at), "dd/MM 'às' HH:mm", { locale: ptBR })}`}
+                      <p className="text-sm text-muted-foreground">
+                        {channel.external_id || '—'}
                       </p>
-                      {channel.error_message && (
-                        <p className="text-xs text-destructive mt-1">{channel.error_message}</p>
-                      )}
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {getProviderLabel(channel.provider)}
+                        {' • '}
+                        {channel.created_at
+                          ? `Criado em ${format(new Date(channel.created_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}`
+                          : ''}
+                      </p>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {channel.status === 'error' && (
-                      <Button variant="outline" size="sm">
-                        <RefreshCw className="w-4 h-4 mr-2" />
-                        Reconectar
-                      </Button>
-                    )}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon">
@@ -148,3 +186,5 @@ export default function ChannelsPage() {
     </div>
   );
 }
+
+

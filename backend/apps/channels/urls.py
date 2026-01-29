@@ -1,5 +1,11 @@
-from django.urls import path
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+
+from apps.channels.views import ChannelViewSet
+
+router = DefaultRouter()
+router.register(r"channels", ChannelViewSet, basename="channels")
 
 urlpatterns = [
-    # Endpoints entrarão aqui depois.
+    path("", include(router.urls)),
 ]
