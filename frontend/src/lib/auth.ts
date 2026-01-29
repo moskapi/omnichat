@@ -58,6 +58,51 @@ export const authApi = {
     return user;
   },
 
+  signup: async ({
+    email,
+    password,
+    name,
+  }: {
+    email: string;
+    password: string;
+    name?: string;
+  }): Promise<User> => {
+    await api.post("/auth/signup/", {
+      email,
+      password,
+      name,
+    });
+    // Retornar um user mínimo (sem tokens, sem setStoredUser)
+    return {
+      id: "me",
+      email,
+      name: name ?? email,
+      created_at: new Date().toISOString(),
+    };
+  },
+
+  requestPasswordReset: async (email: string): Promise<{ ok: true }> => {
+    await api.post("/auth/password-reset/", { email });
+    return { ok: true };
+  },
+
+  confirmPasswordReset: async ({
+    uid,
+    token,
+    newPassword,
+  }: {
+    uid: string;
+    token: string;
+    newPassword: string;
+  }): Promise<{ ok: true }> => {
+    await api.post("/auth/password-reset/confirm/", {
+      uid,
+      token,
+      new_password: newPassword,
+    });
+    return { ok: true };
+  },
+
   refreshAccessToken: async (): Promise<string> => {
     const refresh = getRefreshToken();
     if (!refresh) throw new Error("Missing refresh token");

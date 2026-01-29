@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -9,8 +9,8 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { LoadingSpinner } from '@/components/common';
-import { api, ApiException } from '@/lib/api';
-import { MessageSquare, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle, MessageSquare } from 'lucide-react';
+import authApi from '@/lib/auth';
 
 const resetPasswordSchema = z.object({
   password: z.string().min(6, 'Senha deve ter pelo menos 6 caracteres'),
@@ -25,99 +25,27 @@ type ResetPasswordFormData = z.infer<typeof resetPasswordSchema>;
 export default function ResetPasswordPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const token = searchParams.get('token');
-  
+
   const [isLoading, setIsLoading] = useState(false);
-  const [isValidating, setIsValidating] = useState(true);
-  const [isValidToken, setIsValidToken] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const {
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm<ResetPasswordFormData>({
-    resolver: zodResolver(resetPasswordSchema),
-  });
+  // Ler uid e token da URL (?uid=...&token=...)
+  const uid = searchParams.get('uid');
+  const token = searchParams.get('token');
 
-  // Validate token on mount
-  useEffect(() => {
-    const validateToken = async () => {
-      if (!token) {
-        setIsValidToken(false);
-        setIsValidating(false);
-        return;
-      }
-
-      try {
-        await api.post('/auth/password-reset/validate/', { token });
-        setIsValidToken(true);
-      } catch {
-        setIsValidToken(false);
-      } finally {
-        setIsValidating(false);
-      }
-    };
-
-    validateToken();
-  }, [token]);
-
-  const onSubmit = async (data: ResetPasswordFormData) => {
-    if (!token) return;
-    
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      await api.post('/auth/password-reset/confirm/', {
-        token,
-        password: data.password,
-      });
-      
-      setSuccess(true);
-      // Redirect to login after 3 seconds
-      setTimeout(() => {
-        navigate('/login');
-      }, 3000);
-    } catch (err) {
-      if (err instanceof ApiException) {
-        setError(err.message);
-      } else {
-        setError('Erro ao redefinir senha. Tente novamente.');
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Loading state while validating token
-  if (isValidating) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background to-muted p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <LoadingSpinner size="lg" />
-            <p className="mt-4 text-muted-foreground">Validando link...</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // Invalid or expired token
-  if (!isValidToken) {
+  // Se faltar uid/token, mostrar erro simples
+  if (!uid || !token) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background to-muted p-4">
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
-              <XCircle className="h-6 w-6 text-destructive" />
+              <AlertCircle className="h-6 w-6 text-destructive" />
             </div>
-            <CardTitle className="text-2xl">Link inválido ou expirado</CardTitle>
+            <CardTitle className="text-2xl">Link inválido</CardTitle>
             <CardDescription>
-              O link de redefinição de senha é inválido ou já expirou. 
-              Solicite um novo link para continuar.
+              Parâmetros de redefinição de senha ausentes ou link expirado/errado. Verifique seu e-mail ou solicite novo link.
             </CardDescription>
           </CardHeader>
           <CardFooter className="flex flex-col gap-3">
@@ -133,7 +61,39 @@ export default function ResetPasswordPage() {
     );
   }
 
-  // Success state
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<ResetPasswordFormData>({
+    resolver: zodResolver(resetPasswordSchema),
+  });
+
+  // Submissão: chamar authApi.confirmPasswordReset({ uid, token, newPassword })
+  const onSubmit = async (data: ResetPasswordFormData) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await authApi.confirmPasswordReset({
+        uid,
+        token,
+        newPassword: data.password,
+      });
+      setSuccess(true);
+      setTimeout(() => {
+        navigate('/login');
+      }, 3000);
+    } catch (err: any) {
+      if (typeof err?.message === 'string') {
+        setError(err.message);
+      } else {
+        setError('Erro ao redefinir senha. Tente novamente.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (success) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background to-muted p-4">

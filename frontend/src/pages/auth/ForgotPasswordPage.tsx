@@ -9,8 +9,10 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { LoadingSpinner } from '@/components/common';
-import { api, ApiException } from '@/lib/api';
 import { MessageSquare, AlertCircle, Mail, ArrowLeft } from 'lucide-react';
+import authApi from '@/lib/auth';
+import { ApiException } from "@/lib/api";
+
 
 const forgotPasswordSchema = z.object({
   email: z.string().email('Email inválido'),
@@ -37,9 +39,7 @@ export default function ForgotPasswordPage() {
     setError(null);
 
     try {
-      await api.post('/auth/password-reset/', {
-        email: data.email,
-      });
+      await authApi.requestPasswordReset(data.email);
       
       setSubmittedEmail(data.email);
       setEmailSent(true);

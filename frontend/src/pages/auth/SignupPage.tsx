@@ -9,8 +9,9 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { LoadingSpinner } from '@/components/common';
-import { api, ApiException } from '@/lib/api';
+import { ApiException } from '@/lib/api';
 import { MessageSquare, AlertCircle, CheckCircle } from 'lucide-react';
+import authApi from '@/lib/auth';
 
 const signupSchema = z.object({
   name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
@@ -43,11 +44,12 @@ export default function SignupPage() {
     setError(null);
 
     try {
-      await api.post('/auth/register/', {
+      await authApi.signup({
         name: data.name,
         email: data.email,
         password: data.password,
       });
+      
       
       setSuccess(true);
       // Redirect to login after 3 seconds
