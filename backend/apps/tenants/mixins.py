@@ -1,14 +1,25 @@
-from apps.tenants.workspace import resolve_workspace
+from rest_framework.exceptions import ValidationError, NotFound
+
+from apps.tenants.models import Workspace
 
 
 class WorkspaceRequiredMixin:
+    """
+    Garante que X-Workspace-ID exista e injeta request.workspace
+    sem quebrar o pipeline do DRF (content negotiation, renderer, etc).
+    """
+
     def initial(self, request, *args, **kwargs):
-        # 1) autentica primeiro (popula request.user)
-        self.perform_authentication(request)
+        # chama o DRF primeiro (isso prepara accepted_renderer, etc)
+        super().initial(request, *args, **kwargs)
 
-        # 2) resolve workspace a partir do header (agora com user autenticado)
-        request.workspace = resolve_workspace(request)
+        workspace_id = request.headers.get("X-Workspace-ID")
+        if not workspace_id:
+            raise ValidationError({"detail": "X-Workspace-ID header é obrigatório."})
 
-        # 3) agora sim roda permissões e throttling
-        self.check_permissions(request)
-        self.check_throttles(request)
+        try:
+            workspace = Workspace.objects.get(id=workspace_id)
+        except Workspace.DoesNotExist:
+            raise NotFound({"detail": "Workspace não encontrado."})
+
+        request.workspace = workspace

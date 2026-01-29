@@ -23,9 +23,21 @@ class ChannelSerializer(serializers.ModelSerializer):
 class ChannelCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Channel
-        fields = ["name", "provider", "external_id", "is_active"]
+        fields = ["name", "provider"]
 
-    def create(self, validated_data: Dict[str, Any]) -> Channel:
+    def create(self, validated_data):
         request = self.context["request"]
         workspace = request.workspace
-        return Channel.objects.create(workspace=workspace, **validated_data)
+
+        provider = validated_data["provider"]
+
+        if provider == Channel.Provider.EVOLUTION:
+            validated_data["external_id"] = None
+            validated_data["is_active"] = False
+        else:
+            validated_data["is_active"] = True
+
+        return Channel.objects.create(
+            workspace=workspace,
+            **validated_data
+        )

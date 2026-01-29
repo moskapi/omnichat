@@ -8,8 +8,16 @@ from apps.tenants.permissions import IsWorkspaceMember
 
 
 class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated, IsWorkspaceMember]
+    permission_classes = [IsAuthenticated]
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def list(self, request, *args, **kwargs):
+        print("=== DEBUG /channels list ===")
+        print("Authorization:", request.headers.get("Authorization"))
+        print("X-Workspace-ID:", request.headers.get("X-Workspace-ID"))
+        print("request.workspace:", getattr(request, "workspace", None))
+        return super().list(request, *args, **kwargs)
+
 
     def get_queryset(self):
         queryset = Channel.objects.filter(workspace=self.request.workspace).order_by(
