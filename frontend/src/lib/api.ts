@@ -1,6 +1,8 @@
 import config from '@/config';
 
-// Types for API responses
+// ==============================
+// Types
+// ==============================
 export interface ApiError {
   message: string;
   code?: string;
@@ -12,7 +14,9 @@ export interface ApiResponse<T> {
   message?: string;
 }
 
-// Custom error class for API errors
+// ==============================
+// Custom API Exception
+// ==============================
 export class ApiException extends Error {
   status: number;
   code?: string;
@@ -25,82 +29,83 @@ export class ApiException extends Error {
   }
 }
 
-// Get stored auth token
+// ==============================
+// Auth / Workspace Storage
+// ==============================
 export function getAuthToken(): string | null {
   return localStorage.getItem(config.STORAGE_KEYS.AUTH_TOKEN);
 }
 
-// Set auth token
 export function setAuthToken(token: string): void {
   localStorage.setItem(config.STORAGE_KEYS.AUTH_TOKEN, token);
 }
 
-// Clear auth token
 export function clearAuthToken(): void {
   localStorage.removeItem(config.STORAGE_KEYS.AUTH_TOKEN);
 }
 
-// Get current tenant ID
-export function getTenantId(): string | null {
-  return localStorage.getItem(config.STORAGE_KEYS.TENANT_ID);
+// 🔑 WORKSPACE (multi-tenant real)
+export function getWorkspaceId(): string | null {
+  return localStorage.getItem(config.STORAGE_KEYS.WORKSPACE_ID);
 }
 
-// Set current tenant ID
-export function setTenantId(tenantId: string): void {
-  localStorage.setItem(config.STORAGE_KEYS.TENANT_ID, tenantId);
+export function setWorkspaceId(workspaceId: string): void {
+  localStorage.setItem(config.STORAGE_KEYS.WORKSPACE_ID, workspaceId);
 }
 
-// Clear tenant ID
-export function clearTenantId(): void {
-  localStorage.removeItem(config.STORAGE_KEYS.TENANT_ID);
+export function clearWorkspaceId(): void {
+  localStorage.removeItem(config.STORAGE_KEYS.WORKSPACE_ID);
 }
 
-// Get stored user data
+// ==============================
+// User Storage
+// ==============================
 export function getStoredUser<T>(): T | null {
   const user = localStorage.getItem(config.STORAGE_KEYS.USER);
   return user ? JSON.parse(user) : null;
 }
 
-// Set user data
 export function setStoredUser<T>(user: T): void {
   localStorage.setItem(config.STORAGE_KEYS.USER, JSON.stringify(user));
 }
 
-// Clear user data
 export function clearStoredUser(): void {
   localStorage.removeItem(config.STORAGE_KEYS.USER);
 }
 
+// ==============================
 // Clear all auth data
+// ==============================
 export function clearAllAuth(): void {
   clearAuthToken();
-  clearTenantId();
+  clearWorkspaceId();
   clearStoredUser();
 }
 
-// HTTP Client with automatic auth headers
+// ==============================
+// HTTP Client
+// ==============================
 async function request<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${config.API_BASE_URL}${config.API_VERSION}${endpoint}`;
-  
+
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     ...options.headers,
   };
 
-  // Add auth token if available
+  // Authorization
   const token = getAuthToken();
   if (token) {
     (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
   }
 
-  // Add tenant ID if available
-  const tenantId = getTenantId();
-  if (tenantId) {
-    (headers as Record<string, string>)["X-Workspace-ID"] = tenantId;
-
+  // Workspace (OBRIGATÓRIO no backend)
+  const workspaceId = getWorkspaceId();
+  if (workspaceId) {
+    (headers as Record<string, string>)['X-Workspace-ID'] = workspaceId;
   }
 
   const response = await fetch(url, {
@@ -108,25 +113,27 @@ async function request<T>(
     headers,
   });
 
-  // Handle non-JSON responses
   const contentType = response.headers.get('content-type');
   const isJson = contentType?.includes('application/json');
 
   if (!response.ok) {
-    let errorMessage = 'An error occurred';
+    let errorMessage = 'Erro na requisição';
     let errorCode: string | undefined;
 
     if (isJson) {
       try {
         const errorData = await response.json();
-        errorMessage = errorData.message || errorData.error || errorMessage;
+        errorMessage =
+          errorData.detail ||
+          errorData.message ||
+          errorData.error ||
+          errorMessage;
         errorCode = errorData.code;
       } catch {
-        // Ignore JSON parse errors
+        // ignore
       }
     }
 
-    // Handle specific status codes
     if (response.status === 401) {
       clearAllAuth();
       window.location.href = '/login';
@@ -142,7 +149,9 @@ async function request<T>(
   return response.json();
 }
 
-// API client with typed methods
+// ==============================
+// API helpers
+// ==============================
 export const api = {
   get: <T>(endpoint: string, options?: RequestInit) =>
     request<T>(endpoint, { ...options, method: 'GET' }),

@@ -51,7 +51,7 @@ export default function ChannelsPage() {
     setIsLoading(true);
     setError(null);
     api
-      .get<ApiChannel[]>('/channels/channels/')
+      .get<ApiChannel[]>('/channels/')
       .then((data) => {
         if (!mounted) return;
         setChannels(data);

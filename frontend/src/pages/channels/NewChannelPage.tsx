@@ -64,11 +64,8 @@ export default function NewChannelPage() {
             !!formData.credentials.webhook_verify_token
           );
         } else {
-          return (
-            !!formData.credentials.base_url &&
-            !!formData.credentials.instance_id &&
-            !!formData.credentials.api_key
-          );
+          // Evolution: por enquanto não exige credenciais (QR em breve)
+          return true;
         }
       default:
         return false;
@@ -119,7 +116,7 @@ export default function NewChannelPage() {
     }
 
     try {
-      await api.post('/channels/channels/', payload);
+      await api.post('/channels/', payload);
       navigate('/channels');
     } catch (err: any) {
       // Try to get best possible error message
@@ -360,55 +357,15 @@ export default function NewChannelPage() {
                   </div>
                 </>
               ) : (
-                <>
-                  <div>
-                    <Label htmlFor="base_url">Base URL</Label>
-                    <Input
-                      id="base_url"
-                      placeholder="https://evolution.suaempresa.com"
-                      value={formData.credentials.base_url || ''}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          credentials: { ...formData.credentials, base_url: e.target.value },
-                        })
-                      }
-                      className="mt-2"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="instance_id">Instance ID</Label>
-                    <Input
-                      id="instance_id"
-                      placeholder="minha-instancia"
-                      value={formData.credentials.instance_id || ''}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          credentials: { ...formData.credentials, instance_id: e.target.value },
-                        })
-                      }
-                      className="mt-2"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="api_key">API Key</Label>
-                    <Input
-                      id="api_key"
-                      type="password"
-                      placeholder="sua_api_key"
-                      value={formData.credentials.api_key || ''}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          credentials: { ...formData.credentials, api_key: e.target.value },
-                        })
-                      }
-                      className="mt-2"
-                    />
-                  </div>
-                </>
-              )}
+                <Alert>
+                  <AlertTitle>Conexão via QR Code (em breve)</AlertTitle>
+                  <AlertDescription>
+                    Por enquanto, o canal Evolution será criado como <b>pendente</b>. Assim que a integração
+                    estiver ativa no backend, você poderá conectar escaneando um QR Code aqui.
+                  </AlertDescription>
+                </Alert>
+              )
+              }
             </div>
           )}
         </CardContent>

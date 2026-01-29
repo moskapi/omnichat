@@ -1,7 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User } from '@/lib/auth';
 import { Workspace } from '@/types/api';
-import { getAuthToken, getTenantId, setTenantId, getStoredUser, clearAllAuth } from '@/lib/api';
+import {
+  getAuthToken,
+  getWorkspaceId,
+  setWorkspaceId,
+  getStoredUser,
+  clearAllAuth,
+} from '@/lib/api';
 
 interface AuthContextType {
   user: User | null;
@@ -27,7 +33,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const setCurrentWorkspace = useCallback((workspace: Workspace) => {
     setCurrentWorkspaceState(workspace);
-    setTenantId(workspace.id);
+    setWorkspaceId(workspace.id);
   }, []);
 
   const logout = useCallback(() => {
@@ -41,16 +47,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const token = getAuthToken();
     const storedUser = getStoredUser<User>();
-    const storedTenantId = getTenantId();
+    const storedWorkspaceId = getWorkspaceId();
 
     if (token && storedUser) {
       setUser(storedUser);
-      // Note: workspaces and current workspace would be fetched from API
-      // For now, we just set the tenant ID if it exists
-      if (storedTenantId) {
-        // The actual workspace data would come from an API call
+
+      // TODO: buscar workspaces reais via API
+      // Por enquanto, re-hidrata o workspace pelo ID salvo
+      if (storedWorkspaceId) {
         setCurrentWorkspaceState({
-          id: storedTenantId,
+          id: storedWorkspaceId,
           name: 'Workspace',
           slug: 'workspace',
           role: 'owner',
