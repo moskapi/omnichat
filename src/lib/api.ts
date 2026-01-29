@@ -99,7 +99,8 @@ async function request<T>(
   // Add tenant ID if available
   const tenantId = getTenantId();
   if (tenantId) {
-    (headers as Record<string, string>)['X-Tenant-ID'] = tenantId;
+    (headers as Record<string, string>)["X-Workspace-ID"] = tenantId;
+
   }
 
   const response = await fetch(url, {
