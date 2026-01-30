@@ -1,1 +1,0 @@
-(headers as Record<string, string>)['X-Tenant-ID'] = tenantId;

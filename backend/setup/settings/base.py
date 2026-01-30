@@ -10,10 +10,20 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import os
 from pathlib import Path
+from dotenv import load_dotenv
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+load_dotenv(BASE_DIR / ".env")
+
+# --- ENV ---
+def env(key: str, default=None):
+    return os.getenv(key, default)
 
 
 # Quick-start development settings - unsuitable for production
@@ -159,3 +169,6 @@ REST_FRAMEWORK = {
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
 }
+
+EVOLUTION_BASE_URL = env("EVOLUTION_BASE_URL", "http://localhost:8080")
+EVOLUTION_API_KEY = env("EVOLUTION_API_KEY", "")

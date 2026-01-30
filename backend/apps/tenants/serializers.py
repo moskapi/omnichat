@@ -7,22 +7,43 @@ from rest_framework import serializers
 from apps.tenants.models import ApiKey, Membership, Workspace
 
 
+
 class WorkspaceSerializer(serializers.ModelSerializer):
+    role = serializers.SerializerMethodField()
+
     class Meta:
         model = Workspace
-        fields = ["id", "name", "created_at", "updated_at"]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        fields = ["id", "name", "role", "created_at", "updated_at"]
+        read_only_fields = ["id", "role", "created_at", "updated_at"]
+
+    def get_role(self, obj: Workspace):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return None
+
+        m = Membership.objects.filter(workspace=obj, user=user).first()
+        if not m:
+            return None
+
+        # regra simples: quem criou o workspace aparece como "owner" no frontend
+        if obj.created_by_id == user.id:
+            return "owner"
+
+        # caso contrário, espelha a role real da membership
+        return m.role
 
     @transaction.atomic
     def create(self, validated_data):
         request = self.context.get("request")
         user = getattr(request, "user", None)
         workspace = Workspace.objects.create(created_by=user, **validated_data)
+
         if user and user.is_authenticated:
             Membership.objects.create(
                 workspace=workspace,
                 user=user,
-                role=Membership.ROLE_ADMIN,
+                role=Membership.ROLE_ADMIN,  # mantém admin no banco; "owner" é só apresentação
             )
         return workspace
 

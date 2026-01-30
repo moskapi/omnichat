@@ -18,24 +18,27 @@ import { PageLoading, EmptyState } from '@/components/common';
 import { useAuth } from '@/contexts/AuthContext';
 import { Workspace } from '@/types/api';
 import { cn } from '@/lib/utils';
+import api from '@/lib/api';
+
 
 // Mock workspaces for demonstration
-const mockWorkspaces: Workspace[] = [
-  {
-    id: 'ws-1',
-    name: 'Minha Empresa',
-    slug: 'minha-empresa',
-    role: 'owner',
-    created_at: '2024-01-15T10:00:00Z',
-  },
-  {
-    id: 'ws-2',
-    name: 'Projeto Cliente',
-    slug: 'projeto-cliente',
-    role: 'admin',
-    created_at: '2024-02-20T14:30:00Z',
-  },
-];
+// const mockWorkspaces: Workspace[] = [
+//   {
+//     id: 'ws-1',
+//     name: 'Minha Empresa',
+//     slug: 'minha-empresa',
+//     role: 'owner',
+//     created_at: '2024-01-15T10:00:00Z',
+//   },
+//   {
+//     id: 'ws-2',
+//     name: 'Projeto Cliente',
+//     slug: 'projeto-cliente',
+//     role: 'admin',
+//     created_at: '2024-02-20T14:30:00Z',
+//   },
+// ];
+
 
 export default function WorkspacesPage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -47,16 +50,21 @@ export default function WorkspacesPage() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Simulate API call
     const loadWorkspaces = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      setWorkspaces(mockWorkspaces);
-      setAuthWorkspaces(mockWorkspaces);
-      setIsLoading(false);
+      try {
+        const data = await api.get<Workspace[]>('/tenants/workspaces/');
+        setWorkspaces(data);
+        setAuthWorkspaces(data);
+      } catch (error) {
+        console.error('Error loading workspaces:', error);
+      } finally {
+        setIsLoading(false);
+      }
     };
+  
     loadWorkspaces();
   }, [setAuthWorkspaces]);
-
+  
   const handleSelectWorkspace = (workspace: Workspace) => {
     setCurrentWorkspace(workspace);
     navigate('/inbox');
@@ -64,25 +72,30 @@ export default function WorkspacesPage() {
 
   const handleCreateWorkspace = async () => {
     if (!newWorkspaceName.trim()) return;
-
+  
     setIsCreating(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    const newWorkspace: Workspace = {
-      id: `ws-${Date.now()}`,
-      name: newWorkspaceName,
-      slug: newWorkspaceName.toLowerCase().replace(/\s+/g, '-'),
-      role: 'owner',
-      created_at: new Date().toISOString(),
-    };
-
-    setWorkspaces([...workspaces, newWorkspace]);
-    setAuthWorkspaces([...workspaces, newWorkspace]);
-    setNewWorkspaceName('');
-    setDialogOpen(false);
-    setIsCreating(false);
+    try {
+      const created = await api.post<Workspace>('/tenants/workspaces/', {
+        name: newWorkspaceName.trim(),
+      });
+  
+      const next = [created, ...workspaces];
+      setWorkspaces(next);
+      setAuthWorkspaces(next);
+  
+      setNewWorkspaceName('');
+      setDialogOpen(false);
+  
+      // ✅ seleciona e salva workspace_id no localStorage (via AuthContext)
+      setCurrentWorkspace(created);
+      navigate('/inbox');
+    } catch (error) {
+      console.error('Error creating workspace:', error);
+    } finally {
+      setIsCreating(false);
+    }
   };
+  
 
   if (isLoading) {
     return <PageLoading />;
