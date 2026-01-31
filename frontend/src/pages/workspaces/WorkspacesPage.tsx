@@ -18,8 +18,7 @@ import { PageLoading, EmptyState } from '@/components/common';
 import { useAuth } from '@/contexts/AuthContext';
 import { Workspace } from '@/types/api';
 import { cn } from '@/lib/utils';
-import api from '@/lib/api';
-
+import { api } from '@/lib/api';
 
 // Mock workspaces for demonstration
 // const mockWorkspaces: Workspace[] = [
@@ -61,10 +60,10 @@ export default function WorkspacesPage() {
         setIsLoading(false);
       }
     };
-  
+
     loadWorkspaces();
   }, [setAuthWorkspaces]);
-  
+
   const handleSelectWorkspace = (workspace: Workspace) => {
     setCurrentWorkspace(workspace);
     navigate('/inbox');
@@ -72,20 +71,20 @@ export default function WorkspacesPage() {
 
   const handleCreateWorkspace = async () => {
     if (!newWorkspaceName.trim()) return;
-  
+
     setIsCreating(true);
     try {
       const created = await api.post<Workspace>('/tenants/workspaces/', {
         name: newWorkspaceName.trim(),
       });
-  
+
       const next = [created, ...workspaces];
       setWorkspaces(next);
       setAuthWorkspaces(next);
-  
+
       setNewWorkspaceName('');
       setDialogOpen(false);
-  
+
       // ✅ seleciona e salva workspace_id no localStorage (via AuthContext)
       setCurrentWorkspace(created);
       navigate('/inbox');
@@ -95,7 +94,7 @@ export default function WorkspacesPage() {
       setIsCreating(false);
     }
   };
-  
+
 
   if (isLoading) {
     return <PageLoading />;

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,24 +12,70 @@ import { ChannelProvider } from '@/types/api';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 
+
+type ChannelDTO = {
+  id: string;
+  name: string;
+  provider: 'evolution' | 'whatsapp_official';
+  external_id?: string | null;
+  is_active: boolean;
+};
+
+type EvolutionConnectDTO = {
+  channel_id: string;
+  instance: string;
+  qr: unknown;
+};
+
+type EvolutionStatusDTO = {
+  channel_id: string;
+  instance: string;
+  status: unknown;
+  is_active: boolean;
+};
+
+
 type WizardStep = 1 | 2 | 3;
-
-
 
 interface ChannelFormData {
   name: string;
   provider: ChannelProvider | null;
   riskAccepted: boolean;
   credentials: {
-    // Official
+    // Official (ainda não estamos salvando isso no backend aqui)
     token?: string;
     phone_number_id?: string;
     webhook_verify_token?: string;
-    // Evolution
+
+    // Evolution (não precisa de credenciais no frontend; tudo via QR)
     base_url?: string;
     instance_id?: string;
     api_key?: string;
   };
+}
+
+function pickQrBase64(payload: any): string | null {
+  const qr = payload?.qr ?? payload ?? null;
+  if (!qr) return null;
+
+  const candidates = [
+    qr?.base64,
+    qr?.qrcode,
+    qr?.qrCode,
+    qr?.qr,
+    qr?.code,
+    qr?.data,
+    payload?.base64,
+    payload?.qrcode,
+  ].filter(Boolean);
+
+  const v = candidates[0];
+  if (!v) return null;
+
+  if (typeof v === 'string' && v.startsWith('data:image')) return v;
+  if (typeof v === 'string') return `data:image/png;base64,${v}`;
+
+  return null;
 }
 
 export default function NewChannelPage() {
@@ -43,6 +89,12 @@ export default function NewChannelPage() {
     credentials: {},
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Evolution QR flow states
+  const [createdChannelId, setCreatedChannelId] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [qrSrc, setQrSrc] = useState<string | null>(null);
+  const [polling, setPolling] = useState(false);
 
   const steps = [
     { number: 1, title: 'Nome' },
@@ -64,7 +116,7 @@ export default function NewChannelPage() {
             !!formData.credentials.webhook_verify_token
           );
         } else {
-          // Evolution: por enquanto não exige credenciais (QR em breve)
+          // Evolution: a etapa 3 vira “Conectar via QR”
           return true;
         }
       default:
@@ -90,43 +142,74 @@ export default function NewChannelPage() {
     setIsSaving(true);
     setErrorMessage(null);
 
-    // Map provider to correct backend values
-    let providerValue = formData.provider;
-    if (providerValue === 'evolution') {
-      providerValue = 'evolution';
-    } else if (providerValue === 'whatsapp_official') {
-      providerValue = 'whatsapp_official';
+    const providerValue = formData.provider; // 'evolution' | 'whatsapp_official'
+
+    if (!providerValue) {
+      setErrorMessage('Selecione um provider.');
+      setIsSaving(false);
+      return;
     }
 
-    // Determine external_id based on provider
-    let external_id: string | undefined;
-    if (providerValue === 'whatsapp_official') {
-      external_id = formData.credentials.phone_number_id || undefined;
-    } else if (providerValue === 'evolution') {
-      external_id = formData.credentials.instance_id || undefined;
-    }
-
-    const payload: Record<string, any> = {
+    // payload mínimo compatível com ChannelCreateSerializer (name + provider)
+    const payload = {
       name: formData.name.trim(),
       provider: providerValue,
-      is_active: true,
     };
-    if (external_id) {
-      payload.external_id = external_id;
-    }
 
     try {
-      await api.post('/channels/', payload);
+      // 1) cria o channel
+      const created = await api.post<ChannelDTO>('/channels/', payload);
+
+
+      // 2) se for evolution, pede QR e NÃO navega ainda
+      if (created?.provider === 'evolution') {
+        setCreatedChannelId(created.id);
+        setConnecting(true);
+
+        try {
+          const res = await api.post<EvolutionConnectDTO>(`/channels/${created.id}/evolution/connect/`);
+
+          const src = pickQrBase64(res);
+          setQrSrc(src);
+          setPolling(true);
+        } finally {
+          setConnecting(false);
+        }
+
+        // fica na tela pra usuário escanear
+        setIsSaving(false);
+        return;
+      }
+
+      // 3) caso oficial: navega
       navigate('/channels');
     } catch (err: any) {
-      // Try to get best possible error message
       setErrorMessage(
-        err?.message ||
-        (typeof err === 'string' ? err : 'Ocorreu um erro ao criar o canal.')
+        err?.message || (typeof err === 'string' ? err : 'Ocorreu um erro ao criar o canal.')
       );
       setIsSaving(false);
     }
   };
+
+  // Polling: checa status até conectar e ativar
+  useEffect(() => {
+    if (!polling || !createdChannelId) return;
+
+    const t = setInterval(async () => {
+      try {
+        const st = await api.get<EvolutionStatusDTO>(`/channels/${createdChannelId}/evolution/status/`);
+        if (st?.is_active) {
+          setPolling(false);
+          clearInterval(t);
+          navigate('/channels');
+        }
+      } catch {
+        // silencioso por enquanto
+      }
+    }, 2000);
+
+    return () => clearInterval(t);
+  }, [polling, createdChannelId, navigate]);
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -159,11 +242,7 @@ export default function NewChannelPage() {
                   : 'bg-muted text-muted-foreground'
               )}
             >
-              {currentStep > step.number ? (
-                <Check className="w-4 h-4" />
-              ) : (
-                step.number
-              )}
+              {currentStep > step.number ? <Check className="w-4 h-4" /> : step.number}
             </div>
             <span
               className={cn(
@@ -221,7 +300,9 @@ export default function NewChannelPage() {
             <div className="space-y-6">
               <RadioGroup
                 value={formData.provider || ''}
-                onValueChange={(value) => setFormData({ ...formData, provider: value as ChannelProvider, riskAccepted: false })}
+                onValueChange={(value) =>
+                  setFormData({ ...formData, provider: value as ChannelProvider, riskAccepted: false })
+                }
               >
                 <div className="grid gap-4">
                   {/* Official Option */}
@@ -278,8 +359,8 @@ export default function NewChannelPage() {
                   <AlertTitle>Atenção: Risco de Bloqueio</AlertTitle>
                   <AlertDescription className="mt-2">
                     <p className="mb-3">
-                      O uso de providers não-oficiais pode resultar em <strong>bloqueio permanente</strong> da 
-                      sua conta WhatsApp. Isso inclui:
+                      O uso de providers não-oficiais pode resultar em <strong>bloqueio permanente</strong> da sua
+                      conta WhatsApp. Isso inclui:
                     </p>
                     <ul className="list-disc list-inside space-y-1 text-sm mb-4">
                       <li>Suspensão temporária ou permanente do número</li>
@@ -304,7 +385,7 @@ export default function NewChannelPage() {
             </div>
           )}
 
-          {/* Step 3: Credentials */}
+          {/* Step 3: Credentials / QR */}
           {currentStep === 3 && (
             <div className="space-y-4">
               {formData.provider === 'whatsapp_official' ? (
@@ -357,15 +438,41 @@ export default function NewChannelPage() {
                   </div>
                 </>
               ) : (
-                <Alert>
-                  <AlertTitle>Conexão via QR Code (em breve)</AlertTitle>
-                  <AlertDescription>
-                    Por enquanto, o canal Evolution será criado como <b>pendente</b>. Assim que a integração
-                    estiver ativa no backend, você poderá conectar escaneando um QR Code aqui.
-                  </AlertDescription>
-                </Alert>
-              )
-              }
+                <>
+                  <Alert>
+                    <AlertTitle>Conexão via QR Code</AlertTitle>
+                    <AlertDescription>
+                      Clique em <b>Salvar Canal</b> para criar o canal e gerar o QR Code. Depois escaneie no WhatsApp.
+                    </AlertDescription>
+                  </Alert>
+
+                  {createdChannelId && (
+                    <div className="mt-4 rounded-lg border p-4">
+                      <h3 className="font-medium">Conectar WhatsApp (Evolution)</h3>
+
+                      {connecting && (
+                        <p className="text-sm opacity-70 mt-2">Gerando QR Code...</p>
+                      )}
+
+                      {qrSrc ? (
+                        <div className="mt-4 flex flex-col items-center gap-3">
+                          <img src={qrSrc} alt="QR Code" className="w-64 h-64" />
+                          <p className="text-sm opacity-70 text-center">
+                            Abra o WhatsApp → Dispositivos conectados → Conectar dispositivo e escaneie.
+                          </p>
+                          {polling && <p className="text-sm">Aguardando conexão…</p>}
+                        </div>
+                      ) : (
+                        !connecting && (
+                          <p className="text-sm opacity-70 mt-2">
+                            QR não disponível ainda. Se não aparecer, tente criar novamente.
+                          </p>
+                        )
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </CardContent>
@@ -373,7 +480,11 @@ export default function NewChannelPage() {
 
       {/* Navigation */}
       <div className="flex items-center justify-between mt-6">
-        <Button variant="outline" onClick={handleBack} disabled={currentStep === 1}>
+        <Button
+          variant="outline"
+          onClick={handleBack}
+          disabled={currentStep === 1 || isSaving || connecting}
+        >
           <ArrowLeft className="w-4 h-4 mr-2" />
           Voltar
         </Button>
@@ -384,16 +495,16 @@ export default function NewChannelPage() {
             <ArrowRight className="w-4 h-4 ml-2" />
           </Button>
         ) : (
-          <Button onClick={handleSave} disabled={!canProceed() || isSaving}>
-            {isSaving ? (
+          <Button onClick={handleSave} disabled={!canProceed() || isSaving || connecting}>
+            {isSaving || connecting ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Salvando...
+                {connecting ? 'Gerando QR...' : 'Salvando...'}
               </>
             ) : (
               <>
                 <Check className="w-4 h-4 mr-2" />
-                Salvar Canal
+                {formData.provider === 'evolution' ? 'Salvar e Gerar QR' : 'Salvar Canal'}
               </>
             )}
           </Button>

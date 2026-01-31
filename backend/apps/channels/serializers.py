@@ -1,8 +1,7 @@
 from typing import Any, Dict
 
-from rest_framework import serializers
-
 from apps.channels.models import Channel
+from rest_framework import serializers
 
 
 class ChannelSerializer(serializers.ModelSerializer):
@@ -23,7 +22,18 @@ class ChannelSerializer(serializers.ModelSerializer):
 class ChannelCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Channel
-        fields = ["name", "provider"]
+        # ✅ incluir id no response (e outros campos úteis)
+        fields = [
+            "id",
+            "name",
+            "provider",
+            "external_id",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "external_id",
+                            "is_active", "created_at", "updated_at"]
 
     def create(self, validated_data):
         request = self.context["request"]
@@ -37,7 +47,4 @@ class ChannelCreateSerializer(serializers.ModelSerializer):
         else:
             validated_data["is_active"] = True
 
-        return Channel.objects.create(
-            workspace=workspace,
-            **validated_data
-        )
+        return Channel.objects.create(workspace=workspace, **validated_data)

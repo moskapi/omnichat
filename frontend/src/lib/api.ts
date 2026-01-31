@@ -1,184 +1,132 @@
-import config from '@/config';
+import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
+import { config } from '@/config';
 
-// ==============================
-// Types
-// ==============================
-export interface ApiError {
-  message: string;
-  code?: string;
-  status?: number;
-}
-
-export interface ApiResponse<T> {
-  data: T;
-  message?: string;
-}
-
-// ==============================
-// Custom API Exception
-// ==============================
-export class ApiException extends Error {
-  status: number;
-  code?: string;
-
-  constructor(message: string, status: number, code?: string) {
-    super(message);
-    this.name = 'ApiException';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-// ==============================
-// Auth / Workspace Storage
-// ==============================
+// =========================
+// Storage helpers (AUTH)
+// =========================
 export function getAuthToken(): string | null {
   return localStorage.getItem(config.STORAGE_KEYS.AUTH_TOKEN);
 }
 
-export function setAuthToken(token: string): void {
+export function setAuthToken(token: string) {
   localStorage.setItem(config.STORAGE_KEYS.AUTH_TOKEN, token);
 }
 
-export function clearAuthToken(): void {
-  localStorage.removeItem(config.STORAGE_KEYS.AUTH_TOKEN);
-}
-
-// 🔑 WORKSPACE (multi-tenant real)
 export function getWorkspaceId(): string | null {
   return localStorage.getItem(config.STORAGE_KEYS.WORKSPACE_ID);
 }
 
-export function setWorkspaceId(workspaceId: string): void {
+export function setWorkspaceId(workspaceId: string) {
   localStorage.setItem(config.STORAGE_KEYS.WORKSPACE_ID, workspaceId);
 }
 
-export function clearWorkspaceId(): void {
-  localStorage.removeItem(config.STORAGE_KEYS.WORKSPACE_ID);
+export function getStoredUser<T = any>(): T | null {
+  const raw = localStorage.getItem(config.STORAGE_KEYS.USER);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
 }
 
-// ==============================
-// User Storage
-// ==============================
-export function getStoredUser<T>(): T | null {
-  const user = localStorage.getItem(config.STORAGE_KEYS.USER);
-  return user ? JSON.parse(user) : null;
-}
-
-export function setStoredUser<T>(user: T): void {
+export function setStoredUser<T = any>(user: T) {
   localStorage.setItem(config.STORAGE_KEYS.USER, JSON.stringify(user));
 }
 
-export function clearStoredUser(): void {
+export function clearAllAuth() {
+  localStorage.removeItem(config.STORAGE_KEYS.AUTH_TOKEN);
+  localStorage.removeItem(config.STORAGE_KEYS.WORKSPACE_ID);
   localStorage.removeItem(config.STORAGE_KEYS.USER);
 }
 
-// ==============================
-// Clear all auth data
-// ==============================
-export function clearAllAuth(): void {
-  clearAuthToken();
-  clearWorkspaceId();
-  clearStoredUser();
-}
+// =========================
+// Axios client
+// =========================
+const apiClient: AxiosInstance = axios.create({
+  baseURL: `${config.API_BASE_URL}${config.API_VERSION}`,
+  timeout: 20000,
+});
 
-// ==============================
-// HTTP Client
-// ==============================
-async function request<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const url = `${config.API_BASE_URL}${config.API_VERSION}${endpoint}`;
-
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  };
-
-  // Authorization
+apiClient.interceptors.request.use((request) => {
   const token = getAuthToken();
-  if (token) {
-    (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
-  }
-
-  // Workspace (OBRIGATÓRIO no backend)
   const workspaceId = getWorkspaceId();
+
+  if (token) {
+    request.headers.Authorization = `Bearer ${token}`;
+  }
+
   if (workspaceId) {
-    (headers as Record<string, string>)['X-Workspace-ID'] = workspaceId;
+    request.headers['X-Workspace-ID'] = workspaceId;
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  return request;
+});
 
-  const contentType = response.headers.get('content-type');
-  const isJson = contentType?.includes('application/json');
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response) {
+      const status = error.response.status;
+      const data = error.response.data;
+      const message =
+        data?.detail ||
+        data?.message ||
+        'Erro ao comunicar com o servidor';
 
-  if (!response.ok) {
-    let errorMessage = 'Erro na requisição';
-    let errorCode: string | undefined;
-
-    if (isJson) {
-      try {
-        const errorData = await response.json();
-        errorMessage =
-          errorData.detail ||
-          errorData.message ||
-          errorData.error ||
-          errorMessage;
-        errorCode = errorData.code;
-      } catch {
-        // ignore
-      }
+      throw new ApiException(message, status, data);
     }
 
-    if (response.status === 401) {
-      clearAllAuth();
-      window.location.href = '/login';
-    }
-
-    throw new ApiException(errorMessage, response.status, errorCode);
+    throw new ApiException(
+      'Erro de rede ou servidor indisponível',
+      undefined,
+      error
+    );
   }
+);
 
-  if (!isJson) {
-    return {} as T;
-  }
 
-  return response.json();
+// =========================
+// Typed API wrappers
+// =========================
+async function get<T>(url: string, configReq?: AxiosRequestConfig): Promise<T> {
+  const res = await apiClient.get<T>(url, configReq);
+  return res.data;
 }
 
-// ==============================
-// API helpers
-// ==============================
+async function post<T>(url: string, data?: any, configReq?: AxiosRequestConfig): Promise<T> {
+  const res = await apiClient.post<T>(url, data, configReq);
+  return res.data;
+}
+
+async function patch<T>(url: string, data?: any, configReq?: AxiosRequestConfig): Promise<T> {
+  const res = await apiClient.patch<T>(url, data, configReq);
+  return res.data;
+}
+
+async function del<T>(url: string, configReq?: AxiosRequestConfig): Promise<T> {
+  const res = await apiClient.delete<T>(url, configReq);
+  return res.data;
+}
+
+export class ApiException extends Error {
+  status?: number;
+  data?: any;
+
+  constructor(message: string, status?: number, data?: any) {
+    super(message);
+    this.name = 'ApiException';
+    this.status = status;
+    this.data = data;
+  }
+}
+
+// =========================
+// Export principal
+// =========================
 export const api = {
-  get: <T>(endpoint: string, options?: RequestInit) =>
-    request<T>(endpoint, { ...options, method: 'GET' }),
-
-  post: <T>(endpoint: string, data?: unknown, options?: RequestInit) =>
-    request<T>(endpoint, {
-      ...options,
-      method: 'POST',
-      body: data ? JSON.stringify(data) : undefined,
-    }),
-
-  put: <T>(endpoint: string, data?: unknown, options?: RequestInit) =>
-    request<T>(endpoint, {
-      ...options,
-      method: 'PUT',
-      body: data ? JSON.stringify(data) : undefined,
-    }),
-
-  patch: <T>(endpoint: string, data?: unknown, options?: RequestInit) =>
-    request<T>(endpoint, {
-      ...options,
-      method: 'PATCH',
-      body: data ? JSON.stringify(data) : undefined,
-    }),
-
-  delete: <T>(endpoint: string, options?: RequestInit) =>
-    request<T>(endpoint, { ...options, method: 'DELETE' }),
+  get,
+  post,
+  patch,
+  delete: del,
 };
-
-export default api;
