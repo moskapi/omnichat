@@ -3,7 +3,11 @@ from django.conf import settings
 
 
 class EvolutionClientError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None, data=None, text: str | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.data = data
+        self.text = text
 
 
 class EvolutionClient:
@@ -34,22 +38,43 @@ class EvolutionClient:
 
         if not r.ok:
             raise EvolutionClientError(
-                f"Evolution error {r.status_code} on {method} {path} | body={r.text[:500]}"
+                f"Evolution error {r.status_code} on {method} {path} | body={r.text[:500]}",
+                status_code=r.status_code,
+                data=data,
+                text=r.text,
             )
 
         return data if data is not None else {"_raw": r.text}
 
     # ---------- INSTANCES ----------
 
-    def create_instance(self, instance_name: str):
+    def create_instance(self, instance_name: str, *, integration: str = "WHATSAPP-BAILEYS"):
         return self._request(
             "POST",
             "/instance/create",
-            json={"instanceName": instance_name, "qrcode": True},
+            json={
+                "instanceName": instance_name,
+                "qrcode": True,
+                "integration": integration,  # <- obrigatório
+            },
         )
 
     def get_status(self, instance_name: str):
         return self._request("GET", f"/instance/connectionState/{instance_name}")
+
+    def logout_instance(self, instance_name: str):
+        """
+        Logout / disconnect (dependendo da Evolution, isso derruba a sessão).
+        POST /instance/logout/{instance}
+        """
+        return self._request("POST", f"/instance/logout/{instance_name}")
+
+    def delete_instance(self, instance_name: str):
+        """
+        Remove a instância por completo.
+        DELETE /instance/delete/{instance}
+        """
+        return self._request("DELETE", f"/instance/delete/{instance_name}")
 
     # ---------- PAIRING CODE (ONLY) ----------
 

@@ -7,6 +7,8 @@ from apps.providers.evolution.client import (EvolutionClient,
                                              EvolutionClientError)
 from apps.tenants.mixins import WorkspaceRequiredMixin
 from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -67,11 +69,21 @@ class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
         return Response(ChannelSerializer(channel).data, status=status.HTTP_201_CREATED)
 
     def get_queryset(self):
-        queryset = Channel.objects.filter(
-            workspace=self.request.workspace).order_by("-created_at")
+        include_deleted = self.request.query_params.get("include_deleted")
+        include_deleted = (include_deleted or "").strip().lower() in {
+            "1", "true", "t", "yes", "y"}
+
+        queryset = Channel.objects.filter(workspace=self.request.workspace)
+
+        if not include_deleted:
+            queryset = queryset.filter(deleted_at__isnull=True)
+
+        queryset = queryset.order_by("-created_at")
+
         provider = self.request.query_params.get("provider")
         if provider:
             queryset = queryset.filter(provider=provider)
+
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             normalized = is_active.strip().lower()
@@ -79,6 +91,7 @@ class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
                 queryset = queryset.filter(is_active=True)
             elif normalized in {"false", "0", "f", "no", "n"}:
                 queryset = queryset.filter(is_active=False)
+
         return queryset
 
     def get_serializer_class(self):
@@ -123,7 +136,9 @@ class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
         # 1) cria instância
         create_payload = None
         try:
-            create_payload = client.create_instance(channel.external_id)
+            create_payload = client.create_instance(
+                channel.external_id, integration="WHATSAPP-BAILEYS")
+
         except EvolutionClientError as e:
             # permite seguir se a instância já existir
             msg = str(e).lower()
@@ -238,3 +253,87 @@ class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
                 "last_error": wp.last_error,
             }
         )
+
+    def destroy(self, request, *args, **kwargs):
+        channel = self.get_object()
+
+        # ✅ bloqueia se estiver conectado
+        if channel.is_active:
+            return Response(
+                {"detail": "Canal está conectado. Desconecte antes ou use hard-delete."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # ✅ soft delete
+        if getattr(channel, "deleted_at", None) is None:
+            channel.deleted_at = timezone.now()
+            channel.save(update_fields=["deleted_at", "updated_at"])
+
+        if channel.deleted_at:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"], url_path="disconnect")
+    def disconnect(self, request, pk=None):
+        channel = self.get_object()
+
+        if channel.provider != Channel.Provider.EVOLUTION or not channel.external_id:
+            return Response({"detail": "Canal não é Evolution ou não inicializado."}, status=400)
+
+        wp = self._get_or_create_workspace_evolution(request.workspace)
+        client = EvolutionClient(base_url=wp.base_url, api_key=wp.api_key)
+
+        try:
+            client.logout_instance(channel.external_id)
+        except Exception as e:
+            return Response({"detail": "Falha ao desconectar.", "error": str(e)}, status=502)
+
+        # Atualiza estado local
+        if channel.is_active:
+            channel.is_active = False
+            channel.save(update_fields=["is_active", "updated_at"])
+
+        return Response({"detail": "Desconectado com sucesso."})
+
+    @action(detail=True, methods=["post"], url_path="hard-delete")
+    def hard_delete(self, request, pk=None):
+        channel = self.get_object()
+
+        # 1) Se for EVOLUTION: tenta derrubar e apagar instância
+        if channel.provider == Channel.Provider.EVOLUTION and channel.external_id:
+            wp = self._get_or_create_workspace_evolution(request.workspace)
+            client = EvolutionClient(base_url=wp.base_url, api_key=wp.api_key)
+
+            # tenta logout (não impede continuar)
+            try:
+                client.logout_instance(channel.external_id)
+            except Exception as e:
+                print("WARN hard-delete: logout_instance falhou:", e)
+
+            # delete instance: se falhar, eu BLOQUEIO o hard delete
+            # (pra não deixar instância órfã na Evolution)
+            try:
+                client.delete_instance(channel.external_id)
+            except EvolutionClientError as e:
+                # ✅ se não existe instância, segue o hard-delete mesmo assim
+                if e.status_code == 404:
+                    pass
+                else:
+                    return Response(
+                        {
+                            "detail": "Falha ao deletar instância na Evolution. Canal não foi removido.",
+                            "instance": channel.external_id,
+                            "status_code": e.status_code,
+                            "error": str(e),
+                            "payload": getattr(e, "payload", None),
+                        },
+                        status=status.HTTP_502_BAD_GATEWAY,
+
+                    )
+
+        # 2) Apaga o channel do banco (hard)
+        with transaction.atomic():
+            channel.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -36,6 +36,16 @@ class Channel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    def soft_delete(self):
+        if self.deleted_at is None:
+            self.deleted_at = timezone.now()
+
+    @property
+    def is_deleted(self):
+        return self.deleted_at is not None
+
     class Meta:
         ordering = ["-created_at"]
         constraints = [

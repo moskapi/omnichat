@@ -14,9 +14,10 @@ class ChannelSerializer(serializers.ModelSerializer):
             "external_id",
             "is_active",
             "created_at",
+            "deleted_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at", "deleted_at"]
 
 
 class ChannelCreateSerializer(serializers.ModelSerializer):
@@ -30,10 +31,11 @@ class ChannelCreateSerializer(serializers.ModelSerializer):
             "external_id",
             "is_active",
             "created_at",
+            "deleted_at",
             "updated_at",
         ]
         read_only_fields = ["id", "external_id",
-                            "is_active", "created_at", "updated_at"]
+                            "is_active", "created_at", "updated_at", "deleted_at"]
 
     def create(self, validated_data):
         request = self.context["request"]
