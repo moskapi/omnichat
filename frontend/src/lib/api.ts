@@ -41,6 +41,27 @@ export function clearAllAuth() {
 }
 
 // =========================
+// ApiException (preserva dados do axios)
+// =========================
+export class ApiException extends Error {
+  status?: number;
+  data?: any;
+
+  // NOVO: mantém o erro original e a response do axios (se existir)
+  original?: any;
+  response?: any;
+
+  constructor(message: string, status?: number, data?: any, original?: any, response?: any) {
+    super(message);
+    this.name = 'ApiException';
+    this.status = status;
+    this.data = data;
+    this.original = original;
+    this.response = response;
+  }
+}
+
+// =========================
 // Axios client
 // =========================
 const apiClient: AxiosInstance = axios.create({
@@ -66,25 +87,30 @@ apiClient.interceptors.request.use((request) => {
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response) {
+    // erro com response (backend respondeu, ex: 400/401/404/500/502)
+    if (error?.response) {
       const status = error.response.status;
       const data = error.response.data;
+
       const message =
         data?.detail ||
+        data?.error ||
         data?.message ||
         'Erro ao comunicar com o servidor';
 
-      throw new ApiException(message, status, data);
+      // Importante: preserva response e erro original
+      throw new ApiException(message, status, data, error, error.response);
     }
 
-    throw new ApiException(
-      'Erro de rede ou servidor indisponível',
-      undefined,
-      error
-    );
+    // erro sem response (rede, timeout, CORS, servidor off)
+    const message =
+      error?.message?.includes?.('timeout')
+        ? 'Tempo de resposta excedido (timeout)'
+        : 'Erro de rede ou servidor indisponível';
+
+    throw new ApiException(message, undefined, undefined, error, undefined);
   }
 );
-
 
 // =========================
 // Typed API wrappers
@@ -106,20 +132,13 @@ async function patch<T>(url: string, data?: any, configReq?: AxiosRequestConfig)
 
 async function del<T>(url: string, configReq?: AxiosRequestConfig): Promise<T> {
   const res = await apiClient.delete<T>(url, configReq);
+
+  // DRF costuma retornar 204 sem body
+  if (res.status === 204) return undefined as T;
+
   return res.data;
 }
 
-export class ApiException extends Error {
-  status?: number;
-  data?: any;
-
-  constructor(message: string, status?: number, data?: any) {
-    super(message);
-    this.name = 'ApiException';
-    this.status = status;
-    this.data = data;
-  }
-}
 
 // =========================
 // Export principal

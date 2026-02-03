@@ -3,13 +3,23 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { EmptyState, StatusBadge } from '@/components/common';
-import { Plus, Radio, MoreVertical, Smartphone } from 'lucide-react';
+import { Plus, Radio, MoreVertical, Smartphone, Trash2, Unplug } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { api } from '@/lib/api';
@@ -40,16 +50,36 @@ function getProviderLabel(provider?: string) {
   }
 }
 
+type DeleteMode = 'soft' | 'hard';
+
 export default function ChannelsPage() {
   const [channels, setChannels] = useState<ApiChannel[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [selected, setSelected] = useState<ApiChannel | null>(null);
+  const [deleteMode, setDeleteMode] = useState<DeleteMode>('soft');
+  const [busy, setBusy] = useState(false);
+
   const navigate = useNavigate();
+
+  function removeFromList(channelId: string) {
+    setChannels((prev) => prev.filter((c) => c.id !== channelId));
+  }
+
+  async function refreshChannel(channelId: string) {
+    // opcional: se você tiver endpoint de status etc.
+    // aqui só re-carrega a lista inteira por simplicidade
+    const data = await api.get<ApiChannel[]>('/channels/');
+    setChannels(data);
+  }
 
   useEffect(() => {
     let mounted = true;
     setIsLoading(true);
     setError(null);
+
     api
       .get<ApiChannel[]>('/channels/')
       .then((data) => {
@@ -60,16 +90,85 @@ export default function ChannelsPage() {
       .catch((err) => {
         if (!mounted) return;
         setError(
-          err instanceof Error
-            ? err.message
-            : 'Erro ao carregar canais. Tente novamente.'
+          err instanceof Error ? err.message : 'Erro ao carregar canais. Tente novamente.'
         );
         setIsLoading(false);
       });
+
     return () => {
       mounted = false;
     };
   }, []);
+
+  function openDeleteDialog(channel: ApiChannel, mode: DeleteMode) {
+    setSelected(channel);
+    setDeleteMode(mode);
+    setDialogOpen(true);
+  }
+
+  async function handleDisconnect(channel: ApiChannel) {
+    try {
+      setBusy(true);
+      await api.post(`/channels/${channel.id}/disconnect/`, {});
+      await refreshChannel(channel.id);
+    } catch (e: any) {
+      const msg =
+        e?.message || 'Falha ao desconectar. Veja o console/logs do backend.';
+      alert(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!selected) return;
+
+    try {
+      setBusy(true);
+
+      if (deleteMode === 'soft') {
+        // soft delete (bloqueia se is_active=true; backend retorna 409)
+        await api.delete(`/channels/${selected.id}/`);
+        removeFromList(selected.id);
+      } else {
+        // hard delete (canal + instância na Evolution)
+        await api.post(`/channels/${selected.id}/hard-delete/`, {});
+        removeFromList(selected.id);
+      }
+
+      setDialogOpen(false);
+      setSelected(null);
+    } catch (e: any) {
+      // Se backend devolver 409 no soft delete, mostra mensagem amigável
+      const rawMsg =
+        e?.response?.data?.detail ||
+        e?.message ||
+        'Erro ao remover canal.';
+
+      alert(rawMsg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function softDeleteChannel(channelId: string) {
+    await api.delete<void>(`/channels/${channelId}/`);
+    setChannels((prev) => prev.filter((c) => c.id !== channelId));
+  }
+
+  async function disconnectChannel(channelId: string) {
+    await api.post(`/channels/${channelId}/disconnect/`);
+    // opcional: atualizar is_active localmente
+    setChannels((prev) =>
+      prev.map((c) => (c.id === channelId ? { ...c, is_active: false } : c))
+    );
+  }
+
+  async function hardDeleteChannel(channelId: string) {
+    await api.post<void>(`/channels/${channelId}/hard-delete/`);
+    setChannels((prev) => prev.filter((c) => c.id !== channelId));
+  }
+
 
   return (
     <div className="space-y-6">
@@ -87,6 +186,60 @@ export default function ChannelsPage() {
         </Button>
       </div>
 
+      {/* Dialog de confirmação */}
+      <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteMode === 'soft' ? 'Remover canal?' : 'Remover completamente?'}
+            </AlertDialogTitle>
+
+            <AlertDialogDescription asChild>
+              {selected ? (
+                <div className="space-y-2">
+                  <div className="mt-2">
+                    <strong>{selected.name}</strong>
+                    <div className="text-xs text-muted-foreground">
+                      {getProviderLabel(selected.provider)} • {selected.external_id || '—'}
+                    </div>
+                  </div>
+
+                  {deleteMode === 'soft' ? (
+                    <p className="mt-3">
+                      Isso fará um <strong>soft delete</strong> (o canal some da lista, mas fica
+                      marcado como deletado no banco).
+                      {selected.is_active ? (
+                        <span className="block mt-2 text-destructive">
+                          Este canal está conectado. O backend bloqueia soft delete (409).
+                        </span>
+                      ) : null}
+                    </p>
+                  ) : (
+                    <p className="mt-3">
+                      Isso fará <strong>hard delete</strong>: tenta apagar a instância na Evolution e
+                      remove o canal do banco. Use quando quiser “limpar tudo”.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleConfirmDelete();
+              }}
+              disabled={busy || (deleteMode === 'soft' && !!selected?.is_active)}
+            >
+              {busy ? 'Processando...' : deleteMode === 'soft' ? 'Remover' : 'Remover definitivamente'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Error State */}
       {error ? (
         <Card>
@@ -95,11 +248,7 @@ export default function ChannelsPage() {
               icon={Radio}
               title="Erro ao carregar canais"
               description={error}
-              action={
-                <Button onClick={() => window.location.reload()}>
-                  Tentar Novamente
-                </Button>
-              }
+              action={<Button onClick={() => window.location.reload()}>Tentar Novamente</Button>}
             />
           </CardContent>
         </Card>
@@ -134,6 +283,7 @@ export default function ChannelsPage() {
           {channels.map((channel) => {
             const isActive = channel.is_active;
             const status = isActive ? statusConfig.ativo : statusConfig.inativo;
+
             return (
               <Card key={channel.id} className="hover:shadow-card-hover transition-shadow">
                 <CardContent className="flex items-center justify-between p-5">
@@ -141,23 +291,24 @@ export default function ChannelsPage() {
                     <div className="flex items-center justify-center w-12 h-12 rounded-lg bg-whatsapp/10">
                       <Smartphone className="w-6 h-6 text-whatsapp" />
                     </div>
+
                     <div>
                       <div className="flex items-center gap-2 mb-1">
                         <h3 className="font-semibold text-foreground">{channel.name}</h3>
-                        <StatusBadge
-                          status={status.type}
-                          label={status.label}
-                          pulse={isActive}
-                        />
+                        <StatusBadge status={status.type} label={status.label} pulse={isActive} />
                       </div>
-                      <p className="text-sm text-muted-foreground">
-                        {channel.external_id || '—'}
-                      </p>
+
+                      <p className="text-sm text-muted-foreground">{channel.external_id || '—'}</p>
+
                       <p className="text-xs text-muted-foreground mt-0.5">
                         {getProviderLabel(channel.provider)}
                         {' • '}
                         {channel.created_at
-                          ? `Criado em ${format(new Date(channel.created_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}`
+                          ? `Criado em ${format(
+                            new Date(channel.created_at),
+                            "dd/MM/yyyy 'às' HH:mm",
+                            { locale: ptBR }
+                          )}`
                           : ''}
                       </p>
                     </div>
@@ -170,10 +321,76 @@ export default function ChannelsPage() {
                           <MoreVertical className="w-4 h-4" />
                         </Button>
                       </DropdownMenuTrigger>
+
                       <DropdownMenuContent align="end" className="bg-popover">
-                        <DropdownMenuItem>Editar</DropdownMenuItem>
-                        <DropdownMenuItem>Ver Logs</DropdownMenuItem>
-                        <DropdownMenuItem className="text-destructive">Remover</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => navigate(`/channels/${channel.id}/edit`)}>
+                          Editar
+                        </DropdownMenuItem>
+
+                        <DropdownMenuItem onClick={() => navigate(`/channels/${channel.id}/logs`)}>
+                          Ver Logs
+                        </DropdownMenuItem>
+
+                        {channel.provider === 'evolution' && channel.external_id ? (
+                          <DropdownMenuItem
+                            onClick={() => handleDisconnect(channel)}
+                            disabled={busy || !channel.is_active}
+                          >
+                            <Unplug className="w-4 h-4 mr-2" />
+                            Desconectar
+                          </DropdownMenuItem>
+                        ) : null}
+
+                        {/* Soft delete */}
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          onClick={async () => {
+                            try {
+                              await softDeleteChannel(channel.id);
+                            } catch (err: any) {
+                              // ApiException (do teu api.ts) guarda status em err.status
+                              const status = err?.status;
+
+                              // 409 = canal conectado (teu backend faz isso)
+                              if (status === 409) {
+                                const wantDisconnect = window.confirm(
+                                  "Esse canal está conectado.\n\nOK = Desconectar e remover (soft)\nCancelar = Vou escolher hard-delete na próxima tela"
+                                );
+
+                                if (wantDisconnect) {
+                                  await disconnectChannel(channel.id);
+                                  await softDeleteChannel(channel.id);
+                                  return;
+                                }
+
+                                const wantHard = window.confirm(
+                                  "Deseja HARD DELETE?\nIsso remove o canal do banco e tenta deletar a instância na Evolution."
+                                );
+                                if (wantHard) {
+                                  await hardDeleteChannel(channel.id);
+                                }
+
+                                return;
+                              }
+
+                              // outros erros
+                              alert(err?.message || "Erro ao remover canal.");
+                            }
+                          }}
+                        >
+                          Remover
+                        </DropdownMenuItem>
+
+
+                        {/* Hard delete sempre disponível (principalmente se estiver conectado) */}
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          onClick={() => openDeleteDialog(channel, 'hard')}
+                          disabled={busy}
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Remover completamente
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
@@ -186,5 +403,3 @@ export default function ChannelsPage() {
     </div>
   );
 }
-
-
