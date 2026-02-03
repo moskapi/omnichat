@@ -12,9 +12,9 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 
 import os
 from pathlib import Path
+
+from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
-
-
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -22,6 +22,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 # --- ENV ---
+
+
 def env(key: str, default=None):
     return os.getenv(key, default)
 
@@ -98,12 +100,25 @@ WSGI_APPLICATION = 'setup.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
+#     }
+# }
+
+POSTGRES_HOST = env("POSTGRES_HOST")
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": env("POSTGRES_DB", "omnichat"),
+        "USER": env("POSTGRES_USER", "omnichat"),
+        "PASSWORD": env("POSTGRES_PASSWORD", "omnichat"),
+        "HOST": POSTGRES_HOST,
+        "PORT": env("POSTGRES_PORT", "5432"),
     }
 }
+
 
 EMAIL_BACKEND = "django.core.mail.backends.filebased.EmailBackend"
 EMAIL_FILE_PATH = BASE_DIR / "email"
@@ -158,7 +173,6 @@ CORS_ALLOWED_ORIGINS = [
 
 CORS_ALLOW_CREDENTIALS = True
 
-from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "X-Workspace-ID",

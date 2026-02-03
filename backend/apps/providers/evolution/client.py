@@ -2,10 +2,14 @@ import requests
 from django.conf import settings
 
 
+class EvolutionClientError(RuntimeError):
+    pass
+
+
 class EvolutionClient:
-    def __init__(self):
-        self.base_url = settings.EVOLUTION_BASE_URL.rstrip("/")
-        self.api_key = settings.EVOLUTION_API_KEY
+    def __init__(self, base_url=None, api_key=None):
+        self.base_url = (base_url or settings.EVOLUTION_BASE_URL).rstrip("/")
+        self.api_key = api_key or settings.EVOLUTION_API_KEY
 
     def _headers(self):
         return {
@@ -13,31 +17,48 @@ class EvolutionClient:
             "apikey": self.api_key,
         }
 
+    def _request(self, method: str, path: str, *, json=None, timeout=20):
+        url = f"{self.base_url}{path}"
+        r = requests.request(
+            method,
+            url,
+            json=json,
+            headers=self._headers(),
+            timeout=timeout,
+        )
+
+        try:
+            data = r.json()
+        except Exception:
+            data = None
+
+        if not r.ok:
+            raise EvolutionClientError(
+                f"Evolution error {r.status_code} on {method} {path} | body={r.text[:500]}"
+            )
+
+        return data if data is not None else {"_raw": r.text}
+
+    # ---------- INSTANCES ----------
+
     def create_instance(self, instance_name: str):
-        """
-        Cria uma instância no Evolution
-        """
-        url = f"{self.base_url}/instance/create"
-        payload = {
-            "instanceName": instance_name,
-            "qrcode": True,
-        }
-
-        r = requests.post(url, json=payload, headers=self._headers(), timeout=20)
-        r.raise_for_status()
-        return r.json()
-
-    def get_qr(self, instance_name: str):
-        """
-        Retorna QR code (base64) se ainda não conectado
-        """
-        url = f"{self.base_url}/instance/connect/{instance_name}"
-        r = requests.get(url, headers=self._headers(), timeout=20)
-        r.raise_for_status()
-        return r.json()
+        return self._request(
+            "POST",
+            "/instance/create",
+            json={"instanceName": instance_name, "qrcode": True},
+        )
 
     def get_status(self, instance_name: str):
-        url = f"{self.base_url}/instance/connectionState/{instance_name}"
-        r = requests.get(url, headers=self._headers(), timeout=20)
-        r.raise_for_status()
-        return r.json()
+        return self._request("GET", f"/instance/connectionState/{instance_name}")
+
+    # ---------- PAIRING CODE (ONLY) ----------
+
+    def connect_pairing_code(self, instance_name: str, *, number: str):
+        """
+        Pairing Code:
+        GET /instance/connect/{instance}?number=5516999999999
+        """
+        return self._request(
+            "GET",
+            f"/instance/connect/{instance_name}?number={number}",
+        )

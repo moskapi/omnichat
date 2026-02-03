@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,7 +12,6 @@ import { ChannelProvider } from '@/types/api';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 
-
 type ChannelDTO = {
   id: string;
   name: string;
@@ -24,7 +23,16 @@ type ChannelDTO = {
 type EvolutionConnectDTO = {
   channel_id: string;
   instance: string;
-  qr: unknown;
+
+  // Pairing
+  pairing_code?: string | null;
+
+  // QR (fallback / compat)
+  qr_base64?: string | null;
+  qr_data_url?: string | null;
+
+  raw?: any;
+  error?: string;
 };
 
 type EvolutionStatusDTO = {
@@ -32,8 +40,8 @@ type EvolutionStatusDTO = {
   instance: string;
   status: unknown;
   is_active: boolean;
+  state?: string;
 };
-
 
 type WizardStep = 1 | 2 | 3;
 
@@ -47,14 +55,24 @@ interface ChannelFormData {
     phone_number_id?: string;
     webhook_verify_token?: string;
 
-    // Evolution (não precisa de credenciais no frontend; tudo via QR)
+    // Evolution (não precisa credenciais no frontend; vamos pedir só telefone pra pairing)
     base_url?: string;
     instance_id?: string;
     api_key?: string;
   };
 }
 
-function pickQrBase64(payload: any): string | null {
+function pickQrDataUrl(payload: any): string | null {
+  if (!payload) return null;
+
+  // novo contrato do backend
+  const direct = payload?.qr_data_url;
+  if (typeof direct === 'string' && direct.startsWith('data:image')) return direct;
+
+  const b64 = payload?.qr_base64;
+  if (typeof b64 === 'string' && b64.length > 20) return `data:image/png;base64,${b64}`;
+
+  // fallback (compat)
   const qr = payload?.qr ?? payload ?? null;
   if (!qr) return null;
 
@@ -78,6 +96,11 @@ function pickQrBase64(payload: any): string | null {
   return null;
 }
 
+function normalizePhoneDigits(raw: string): string {
+  // frontend: só limpa (backend idealmente valida/normaliza também)
+  return (raw || '').replace(/\D+/g, '');
+}
+
 export default function NewChannelPage() {
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState<WizardStep>(1);
@@ -90,11 +113,19 @@ export default function NewChannelPage() {
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Evolution QR flow states
+  // Evolution connect states
   const [createdChannelId, setCreatedChannelId] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
-  const [qrSrc, setQrSrc] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
+
+  // Pairing / QR
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [qrSrc, setQrSrc] = useState<string | null>(null);
+
+  const [debugInfo, setDebugInfo] = useState<string | null>(null);
+  const [debugRaw, setDebugRaw] = useState<string | null>(null);
+
 
   const steps = [
     { number: 1, title: 'Nome' },
@@ -102,27 +133,32 @@ export default function NewChannelPage() {
     { number: 3, title: 'Credenciais' },
   ];
 
-  const canProceed = () => {
+  const isEvolution = formData.provider === 'evolution';
+  const isOfficial = formData.provider === 'whatsapp_official';
+
+  const canProceed = useMemo(() => {
     switch (currentStep) {
       case 1:
         return formData.name.trim().length >= 3;
       case 2:
         return formData.provider !== null && (formData.provider === 'whatsapp_official' || formData.riskAccepted);
       case 3:
-        if (formData.provider === 'whatsapp_official') {
+        if (isOfficial) {
           return (
             !!formData.credentials.token &&
             !!formData.credentials.phone_number_id &&
             !!formData.credentials.webhook_verify_token
           );
-        } else {
-          // Evolution: a etapa 3 vira “Conectar via QR”
-          return true;
         }
+        if (isEvolution) {
+          // vamos exigir telefone para pairing (mesmo que backend ainda esteja em QR, isso não atrapalha)
+          return normalizePhoneDigits(phoneNumber).length >= 10;
+        }
+        return false;
       default:
         return false;
     }
-  };
+  }, [currentStep, formData, isOfficial, isEvolution, phoneNumber]);
 
   const handleNext = () => {
     setErrorMessage(null);
@@ -142,6 +178,7 @@ export default function NewChannelPage() {
     setIsSaving(true);
     setErrorMessage(null);
 
+
     const providerValue = formData.provider; // 'evolution' | 'whatsapp_official'
 
     if (!providerValue) {
@@ -158,25 +195,56 @@ export default function NewChannelPage() {
 
     try {
       // 1) cria o channel
-      const created = await api.post<ChannelDTO>('/channels/', payload);
+      const createdRes = await api.post<ChannelDTO>('/channels/', payload);
+      const created = (createdRes as any)?.data ?? createdRes;
 
-
-      // 2) se for evolution, pede QR e NÃO navega ainda
+      // 2) Evolution: conectar (pairing code preferencial, QR fallback)
       if (created?.provider === 'evolution') {
         setCreatedChannelId(created.id);
         setConnecting(true);
+        setPairingCode(null);
+        setQrSrc(null);
 
         try {
-          const res = await api.post<EvolutionConnectDTO>(`/channels/${created.id}/evolution/connect/`);
+          const digits = normalizePhoneDigits(phoneNumber);
 
-          const src = pickQrBase64(res);
+          // manda phone_number para pairing code (quando backend suportar)
+          const connectRes = await api.post<EvolutionConnectDTO>(
+            `/channels/${created.id}/evolution/connect/`,
+            digits ? { phone_number: digits } : undefined
+          );
+
+          const connect = (connectRes as any)?.data ?? connectRes;
+
+          // Pairing code (novo)
+          const pc =
+            connect?.pairing_code ??
+            connect?.pairingCode ??
+            connect?.code ??
+            null;
+
+          if (pc) {
+            setPairingCode(String(pc));
+            setPolling(true);
+            setIsSaving(false);
+            return; // fica na tela para o usuário digitar o código no WhatsApp
+          }
+
+          // Fallback para QR (contrato atual)
+          const src = pickQrDataUrl(connect);
           setQrSrc(src);
+
+          if (!src) {
+            // Ajuda debugging
+            console.log('Evolution connect raw:', connect?.raw ?? connect);
+          }
+
           setPolling(true);
         } finally {
           setConnecting(false);
         }
 
-        // fica na tela pra usuário escanear
+        // fica na tela pra usuário parear/escanejar
         setIsSaving(false);
         return;
       }
@@ -184,10 +252,16 @@ export default function NewChannelPage() {
       // 3) caso oficial: navega
       navigate('/channels');
     } catch (err: any) {
-      setErrorMessage(
-        err?.message || (typeof err === 'string' ? err : 'Ocorreu um erro ao criar o canal.')
-      );
-      setIsSaving(false);
+      console.log("EVOLUTION CONNECT ERROR:", err);
+      console.log("status:", err?.status);
+      console.log("data:", err?.data);
+      console.log("original axios response:", err?.original?.response);
+
+      setErrorMessage(err?.message || "Erro ao conectar");
+
+      if (err?.data) {
+        setDebugRaw(JSON.stringify(err.data, null, 2));
+      }
     }
   };
 
@@ -197,7 +271,9 @@ export default function NewChannelPage() {
 
     const t = setInterval(async () => {
       try {
-        const st = await api.get<EvolutionStatusDTO>(`/channels/${createdChannelId}/evolution/status/`);
+        const stRes = await api.get<EvolutionStatusDTO>(`/channels/${createdChannelId}/evolution/status/`);
+        const st = (stRes as any)?.data ?? stRes;
+
         if (st?.is_active) {
           setPolling(false);
           clearInterval(t);
@@ -385,10 +461,10 @@ export default function NewChannelPage() {
             </div>
           )}
 
-          {/* Step 3: Credentials / QR */}
+          {/* Step 3: Credentials / Pairing / QR */}
           {currentStep === 3 && (
             <div className="space-y-4">
-              {formData.provider === 'whatsapp_official' ? (
+              {isOfficial ? (
                 <>
                   <div>
                     <Label htmlFor="token">Access Token</Label>
@@ -440,34 +516,67 @@ export default function NewChannelPage() {
               ) : (
                 <>
                   <Alert>
-                    <AlertTitle>Conexão via QR Code</AlertTitle>
+                    <AlertTitle>Conectar WhatsApp</AlertTitle>
                     <AlertDescription>
-                      Clique em <b>Salvar Canal</b> para criar o canal e gerar o QR Code. Depois escaneie no WhatsApp.
+                      Informe seu número e clique em <b>Salvar e Conectar</b>. Vamos gerar um <b>código de pareamento</b>.
+                      Se o backend ainda não suportar, caímos automaticamente para <b>QR Code</b>.
                     </AlertDescription>
                   </Alert>
+
+                  <div>
+                    <Label htmlFor="evo-phone">Telefone do WhatsApp</Label>
+                    <Input
+                      id="evo-phone"
+                      placeholder="Ex: 16 99159-2095"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value)}
+                      className="mt-2"
+                    />
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Dica: pode digitar com espaço/traço. Nós só usamos os dígitos.
+                    </p>
+                  </div>
 
                   {createdChannelId && (
                     <div className="mt-4 rounded-lg border p-4">
                       <h3 className="font-medium">Conectar WhatsApp (Evolution)</h3>
 
                       {connecting && (
-                        <p className="text-sm opacity-70 mt-2">Gerando QR Code...</p>
+                        <p className="text-sm opacity-70 mt-2">Gerando código/QR…</p>
                       )}
 
-                      {qrSrc ? (
+                      {/* Pairing Code */}
+                      {pairingCode ? (
                         <div className="mt-4 flex flex-col items-center gap-3">
-                          <img src={qrSrc} alt="QR Code" className="w-64 h-64" />
+                          <div className="rounded-md border px-4 py-3 w-full text-center">
+                            <p className="text-sm text-muted-foreground">Código de pareamento</p>
+                            <p className="text-2xl font-mono tracking-widest mt-1">{pairingCode}</p>
+                          </div>
                           <p className="text-sm opacity-70 text-center">
-                            Abra o WhatsApp → Dispositivos conectados → Conectar dispositivo e escaneie.
+                            No WhatsApp: <br />
+                            <b>Aparelhos conectados</b> → <b>Conectar aparelho</b> → <b>Vincular com código</b>
                           </p>
                           {polling && <p className="text-sm">Aguardando conexão…</p>}
                         </div>
                       ) : (
-                        !connecting && (
-                          <p className="text-sm opacity-70 mt-2">
-                            QR não disponível ainda. Se não aparecer, tente criar novamente.
-                          </p>
-                        )
+                        <>
+                          {/* QR fallback */}
+                          {qrSrc ? (
+                            <div className="mt-4 flex flex-col items-center gap-3">
+                              <img src={qrSrc} alt="QR Code" className="w-64 h-64" />
+                              <p className="text-sm opacity-70 text-center">
+                                Abra o WhatsApp → Dispositivos conectados → Conectar dispositivo e escaneie.
+                              </p>
+                              {polling && <p className="text-sm">Aguardando conexão…</p>}
+                            </div>
+                          ) : (
+                            !connecting && (
+                              <p className="text-sm opacity-70 mt-2">
+                                Ainda não gerou o código/QR. Clique em <b>Salvar e Conectar</b>.
+                              </p>
+                            )
+                          )}
+                        </>
                       )}
                     </div>
                   )}
@@ -490,21 +599,21 @@ export default function NewChannelPage() {
         </Button>
 
         {currentStep < 3 ? (
-          <Button onClick={handleNext} disabled={!canProceed()}>
+          <Button onClick={handleNext} disabled={!canProceed}>
             Próximo
             <ArrowRight className="w-4 h-4 ml-2" />
           </Button>
         ) : (
-          <Button onClick={handleSave} disabled={!canProceed() || isSaving || connecting}>
+          <Button onClick={handleSave} disabled={!canProceed || isSaving || connecting}>
             {isSaving || connecting ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                {connecting ? 'Gerando QR...' : 'Salvando...'}
+                {connecting ? 'Conectando...' : 'Salvando...'}
               </>
             ) : (
               <>
                 <Check className="w-4 h-4 mr-2" />
-                {formData.provider === 'evolution' ? 'Salvar e Gerar QR' : 'Salvar Canal'}
+                {isEvolution ? 'Salvar e Conectar' : 'Salvar Canal'}
               </>
             )}
           </Button>

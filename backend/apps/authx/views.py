@@ -3,17 +3,21 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.utils.encoding import force_bytes
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenViewBase
 
-from .serializers import (
-    SignupSerializer,
-    PasswordResetRequestSerializer,
-    PasswordResetConfirmSerializer,
-)
+from .serializers import (EmailTokenObtainPairSerializer,
+                          PasswordResetConfirmSerializer,
+                          PasswordResetRequestSerializer, SignupSerializer)
+
+
+class EmailTokenObtainPairView(TokenViewBase):
+    serializer_class = EmailTokenObtainPairSerializer
+
 
 User = get_user_model()
 
@@ -26,7 +30,8 @@ class SignupView(APIView):
         s.is_valid(raise_exception=True)
         user = s.save()
         return Response(
-            {"id": user.id, "email": getattr(user, "email", None) or getattr(user, "username", "")},
+            {"id": user.id, "email": getattr(
+                user, "email", None) or getattr(user, "username", "")},
             status=status.HTTP_201_CREATED,
         )
 
@@ -47,7 +52,8 @@ class PasswordResetRequestView(APIView):
             token = default_token_generator.make_token(user)
 
             # URL do frontend (dev)
-            frontend_base = getattr(settings, "FRONTEND_RESET_URL_BASE", "http://localhost:8080/reset-password")
+            frontend_base = getattr(
+                settings, "FRONTEND_RESET_URL_BASE", "http://localhost:8080/reset-password")
             reset_link = f"{frontend_base}?uid={uid}&token={token}"
 
             subject = "Omnichat - Redefinição de senha"
@@ -56,7 +62,8 @@ class PasswordResetRequestView(APIView):
             send_mail(
                 subject=subject,
                 message=message,
-                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@omnichat.local"),
+                from_email=getattr(
+                    settings, "DEFAULT_FROM_EMAIL", "no-reply@omnichat.local"),
                 recipient_list=[email],
                 fail_silently=True,
             )

@@ -46,7 +46,7 @@ export default function LoginPage() {
       });
       setUser(user);
       navigate("/workspaces");
-      
+
     } catch (err) {
       if (err instanceof ApiException) {
         setError(err.message);
@@ -91,7 +91,7 @@ export default function LoginPage() {
                 <Label htmlFor="email">Email</Label>
                 <Input
                   id="email"
-                  type=""
+                  type="email"
                   placeholder="seu@email.com"
                   {...register('email')}
                   className={errors.email ? 'border-destructive' : ''}

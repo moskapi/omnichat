@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import models
+from django.utils import timezone
 
 
 class Channel(models.Model):
@@ -54,3 +55,49 @@ class Channel(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+
+class WorkspaceProvider(models.Model):
+    class Provider(models.TextChoices):
+        EVOLUTION = "evolution", "evolution"
+
+    class Status(models.TextChoices):
+        READY = "ready", "ready"
+        PROVISIONING = "provisioning", "provisioning"
+        ERROR = "error", "error"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    workspace = models.ForeignKey(
+        "tenants.Workspace",
+        on_delete=models.CASCADE,
+        related_name="workspace_providers",
+    )
+    provider = models.CharField(
+        max_length=50, choices=Provider.choices, db_index=True)
+
+    status = models.CharField(
+        max_length=32, choices=Status.choices, default=Status.PROVISIONING, db_index=True
+    )
+
+    # Evolution endpoint do workspace (na Fly vai ser a URL pública desse workspace)
+    base_url = models.URLField(blank=True, null=True)
+    api_key = models.CharField(max_length=255, blank=True, null=True)
+
+    last_error = models.TextField(blank=True, null=True)
+    ready_at = models.DateTimeField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "provider"],
+                name="uniq_workspace_provider_per_workspace",
+            )
+        ]
+
+    def mark_ready(self):
+        self.status = self.Status.READY
+        self.ready_at = timezone.now()
+        self.last_error = None

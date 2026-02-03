@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User } from '@/lib/auth';
 import { Workspace } from '@/types/api';
+import { clearRefreshToken } from '@/lib/auth';
 import {
   getAuthToken,
   getWorkspaceId,
@@ -38,6 +39,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(() => {
     clearAllAuth();
+    clearRefreshToken();
     setUser(null);
     setWorkspaces([]);
     setCurrentWorkspaceState(null);
