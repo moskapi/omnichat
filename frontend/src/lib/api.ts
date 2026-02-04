@@ -1,8 +1,9 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { config } from '@/config';
+import { getRuntimeWorkspaceId } from '@/lib/workspaceRuntime';
 
 // =========================
-// Storage helpers (AUTH)
+// Storage helpers (AUTH فقط)
 // =========================
 export function getAuthToken(): string | null {
   return localStorage.getItem(config.STORAGE_KEYS.AUTH_TOKEN);
@@ -10,14 +11,6 @@ export function getAuthToken(): string | null {
 
 export function setAuthToken(token: string) {
   localStorage.setItem(config.STORAGE_KEYS.AUTH_TOKEN, token);
-}
-
-export function getWorkspaceId(): string | null {
-  return localStorage.getItem(config.STORAGE_KEYS.WORKSPACE_ID);
-}
-
-export function setWorkspaceId(workspaceId: string) {
-  localStorage.setItem(config.STORAGE_KEYS.WORKSPACE_ID, workspaceId);
 }
 
 export function getStoredUser<T = any>(): T | null {
@@ -36,18 +29,15 @@ export function setStoredUser<T = any>(user: T) {
 
 export function clearAllAuth() {
   localStorage.removeItem(config.STORAGE_KEYS.AUTH_TOKEN);
-  localStorage.removeItem(config.STORAGE_KEYS.WORKSPACE_ID);
   localStorage.removeItem(config.STORAGE_KEYS.USER);
 }
 
 // =========================
-// ApiException (preserva dados do axios)
+// ApiException
 // =========================
 export class ApiException extends Error {
   status?: number;
   data?: any;
-
-  // NOVO: mantém o erro original e a response do axios (se existir)
   original?: any;
   response?: any;
 
@@ -69,28 +59,49 @@ const apiClient: AxiosInstance = axios.create({
   timeout: 20000,
 });
 
-apiClient.interceptors.request.use((request) => {
-  const token = getAuthToken();
-  const workspaceId = getWorkspaceId();
+apiClient.interceptors.request.use(
+  (request) => {
+    const token = getAuthToken();
+    const workspaceId = getRuntimeWorkspaceId();
 
-  if (token) {
-    request.headers.Authorization = `Bearer ${token}`;
-  }
+    if (!request.headers) {
+      request.headers = new axios.AxiosHeaders();
+    } else if (typeof (request.headers as any).set !== 'function') {
+      request.headers = new axios.AxiosHeaders(request.headers as any);
+    }
 
-  if (workspaceId) {
-    request.headers['X-Workspace-ID'] = workspaceId;
-  }
+    if (token) {
+      request.headers.set('Authorization', `Bearer ${token}`);
+    }
 
-  return request;
-});
+    // ✅ workspace SEM localStorage: vem da rota /w/:workspaceId/*
+    if (workspaceId) {
+      request.headers.set('X-Workspace-ID', workspaceId);
+    }
+
+    return request;
+  },
+  (error) => Promise.reject(error)
+);
 
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    // erro com response (backend respondeu, ex: 400/401/404/500/502)
     if (error?.response) {
       const status = error.response.status;
       const data = error.response.data;
+
+      // 401: limpa auth e vai pro login
+      if (status === 401) {
+        try {
+          clearAllAuth();
+          localStorage.removeItem('OMNICHAT_REFRESH_TOKEN');
+        } catch { }
+
+        if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+      }
 
       const message =
         data?.detail ||
@@ -98,11 +109,9 @@ apiClient.interceptors.response.use(
         data?.message ||
         'Erro ao comunicar com o servidor';
 
-      // Importante: preserva response e erro original
       throw new ApiException(message, status, data, error, error.response);
     }
 
-    // erro sem response (rede, timeout, CORS, servidor off)
     const message =
       error?.message?.includes?.('timeout')
         ? 'Tempo de resposta excedido (timeout)'
@@ -132,17 +141,10 @@ async function patch<T>(url: string, data?: any, configReq?: AxiosRequestConfig)
 
 async function del<T>(url: string, configReq?: AxiosRequestConfig): Promise<T> {
   const res = await apiClient.delete<T>(url, configReq);
-
-  // DRF costuma retornar 204 sem body
   if (res.status === 204) return undefined as T;
-
   return res.data;
 }
 
-
-// =========================
-// Export principal
-// =========================
 export const api = {
   get,
   post,

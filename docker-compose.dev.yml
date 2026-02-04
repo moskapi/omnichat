@@ -4,7 +4,7 @@ services:
   backend:
     build: ./backend
     container_name: omnichat-backend
-    command: python manage.py runserver 0.0.0.0:8000
+    command: sh -lc "pip install -r /app/requirements.txt && python manage.py runserver 0.0.0.0:8000"
     volumes:
       - ./backend:/app
     ports:
@@ -29,12 +29,18 @@ services:
       # Evolution (client backend → evolution)
       EVOLUTION_BASE_URL: http://evolution:8080
       EVOLUTION_API_KEY: dev_key
+
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL}
+      
     depends_on:
       - db
       - redis
 
   db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: omnichat-db
     environment:
       POSTGRES_DB: omnichat

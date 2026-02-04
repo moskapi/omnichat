@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -20,31 +20,13 @@ import { Workspace } from '@/types/api';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 
-// Mock workspaces for demonstration
-// const mockWorkspaces: Workspace[] = [
-//   {
-//     id: 'ws-1',
-//     name: 'Minha Empresa',
-//     slug: 'minha-empresa',
-//     role: 'owner',
-//     created_at: '2024-01-15T10:00:00Z',
-//   },
-//   {
-//     id: 'ws-2',
-//     name: 'Projeto Cliente',
-//     slug: 'projeto-cliente',
-//     role: 'admin',
-//     created_at: '2024-02-20T14:30:00Z',
-//   },
-// ];
-
-
 export default function WorkspacesPage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+
   const { setCurrentWorkspace, setWorkspaces: setAuthWorkspaces } = useAuth();
   const navigate = useNavigate();
 
@@ -66,7 +48,7 @@ export default function WorkspacesPage() {
 
   const handleSelectWorkspace = (workspace: Workspace) => {
     setCurrentWorkspace(workspace);
-    navigate('/inbox');
+    navigate(`/w/${workspace.id}/inbox`);
   };
 
   const handleCreateWorkspace = async () => {
@@ -85,9 +67,8 @@ export default function WorkspacesPage() {
       setNewWorkspaceName('');
       setDialogOpen(false);
 
-      // ✅ seleciona e salva workspace_id no localStorage (via AuthContext)
       setCurrentWorkspace(created);
-      navigate('/inbox');
+      navigate(`/w/${created.id}/inbox`);
     } catch (error) {
       console.error('Error creating workspace:', error);
     } finally {
@@ -95,10 +76,7 @@ export default function WorkspacesPage() {
     }
   };
 
-
-  if (isLoading) {
-    return <PageLoading />;
-  }
+  if (isLoading) return <PageLoading />;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background via-background to-accent/30 p-4">
@@ -146,7 +124,10 @@ export default function WorkspacesPage() {
                         <Button variant="outline" onClick={() => setDialogOpen(false)}>
                           Cancelar
                         </Button>
-                        <Button onClick={handleCreateWorkspace} disabled={isCreating || !newWorkspaceName.trim()}>
+                        <Button
+                          onClick={handleCreateWorkspace}
+                          disabled={isCreating || !newWorkspaceName.trim()}
+                        >
                           {isCreating ? (
                             <>
                               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -183,7 +164,11 @@ export default function WorkspacesPage() {
                       <div>
                         <h3 className="font-semibold text-foreground">{workspace.name}</h3>
                         <p className="text-sm text-muted-foreground capitalize">
-                          {workspace.role === 'owner' ? 'Proprietário' : workspace.role === 'admin' ? 'Administrador' : 'Membro'}
+                          {workspace.role === 'owner'
+                            ? 'Proprietário'
+                            : workspace.role === 'admin'
+                              ? 'Administrador'
+                              : 'Membro'}
                         </p>
                       </div>
                     </div>
@@ -228,7 +213,10 @@ export default function WorkspacesPage() {
                   <Button variant="outline" onClick={() => setDialogOpen(false)}>
                     Cancelar
                   </Button>
-                  <Button onClick={handleCreateWorkspace} disabled={isCreating || !newWorkspaceName.trim()}>
+                  <Button
+                    onClick={handleCreateWorkspace}
+                    disabled={isCreating || !newWorkspaceName.trim()}
+                  >
                     {isCreating ? (
                       <>
                         <Loader2 className="w-4 h-4 mr-2 animate-spin" />

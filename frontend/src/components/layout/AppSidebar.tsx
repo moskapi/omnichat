@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useParams } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import {
   Inbox,
@@ -12,11 +12,11 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 interface NavItem {
   title: string;
-  href: string;
+  href: string; // agora é "path relativo", ex: "/inbox"
   icon: React.ComponentType<{ className?: string }>;
   badge?: number;
 }
@@ -33,6 +33,12 @@ const navItems: NavItem[] = [
 export function AppSidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
+  const { workspaceId } = useParams();
+
+  // base do workspace atual
+  const base = useMemo(() => {
+    return workspaceId ? `/w/${workspaceId}` : '';
+  }, [workspaceId]);
 
   return (
     <aside
@@ -58,11 +64,17 @@ export function AppSidebar() {
       {/* Navigation */}
       <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
         {navItems.map((item) => {
-          const isActive = location.pathname.startsWith(item.href);
+          const to = `${base}${item.href}`;
+
+          // ativo: compara contra o path com workspace
+          const isActive = workspaceId
+            ? location.pathname.startsWith(to)
+            : location.pathname.startsWith(item.href);
+
           return (
             <NavLink
               key={item.href}
-              to={item.href}
+              to={to}
               className={cn(
                 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
                 'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
@@ -71,7 +83,9 @@ export function AppSidebar() {
                   : 'text-sidebar-foreground'
               )}
             >
-              <item.icon className={cn('w-5 h-5 flex-shrink-0', isActive && 'text-sidebar-primary')} />
+              <item.icon
+                className={cn('w-5 h-5 flex-shrink-0', isActive && 'text-sidebar-primary')}
+              />
               {!collapsed && <span>{item.title}</span>}
               {!collapsed && item.badge !== undefined && item.badge > 0 && (
                 <span className="ml-auto flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-semibold rounded-full bg-sidebar-primary text-sidebar-primary-foreground">

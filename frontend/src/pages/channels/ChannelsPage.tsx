@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { EmptyState, StatusBadge } from '@/components/common';
@@ -63,14 +63,15 @@ export default function ChannelsPage() {
   const [busy, setBusy] = useState(false);
 
   const navigate = useNavigate();
+  const { workspaceId } = useParams();
+
+  const base = workspaceId ? `/w/${workspaceId}` : '';
 
   function removeFromList(channelId: string) {
     setChannels((prev) => prev.filter((c) => c.id !== channelId));
   }
 
-  async function refreshChannel(channelId: string) {
-    // opcional: se você tiver endpoint de status etc.
-    // aqui só re-carrega a lista inteira por simplicidade
+  async function refreshChannel() {
     const data = await api.get<ApiChannel[]>('/channels/');
     setChannels(data);
   }
@@ -89,9 +90,7 @@ export default function ChannelsPage() {
       })
       .catch((err) => {
         if (!mounted) return;
-        setError(
-          err instanceof Error ? err.message : 'Erro ao carregar canais. Tente novamente.'
-        );
+        setError(err instanceof Error ? err.message : 'Erro ao carregar canais. Tente novamente.');
         setIsLoading(false);
       });
 
@@ -110,11 +109,9 @@ export default function ChannelsPage() {
     try {
       setBusy(true);
       await api.post(`/channels/${channel.id}/disconnect/`, {});
-      await refreshChannel(channel.id);
+      await refreshChannel();
     } catch (e: any) {
-      const msg =
-        e?.message || 'Falha ao desconectar. Veja o console/logs do backend.';
-      alert(msg);
+      alert(e?.message || 'Falha ao desconectar. Veja o console/logs do backend.');
     } finally {
       setBusy(false);
     }
@@ -127,11 +124,9 @@ export default function ChannelsPage() {
       setBusy(true);
 
       if (deleteMode === 'soft') {
-        // soft delete (bloqueia se is_active=true; backend retorna 409)
         await api.delete(`/channels/${selected.id}/`);
         removeFromList(selected.id);
       } else {
-        // hard delete (canal + instância na Evolution)
         await api.post(`/channels/${selected.id}/hard-delete/`, {});
         removeFromList(selected.id);
       }
@@ -139,7 +134,6 @@ export default function ChannelsPage() {
       setDialogOpen(false);
       setSelected(null);
     } catch (e: any) {
-      // Se backend devolver 409 no soft delete, mostra mensagem amigável
       const rawMsg =
         e?.response?.data?.detail ||
         e?.message ||
@@ -158,7 +152,6 @@ export default function ChannelsPage() {
 
   async function disconnectChannel(channelId: string) {
     await api.post(`/channels/${channelId}/disconnect/`);
-    // opcional: atualizar is_active localmente
     setChannels((prev) =>
       prev.map((c) => (c.id === channelId ? { ...c, is_active: false } : c))
     );
@@ -168,7 +161,6 @@ export default function ChannelsPage() {
     await api.post<void>(`/channels/${channelId}/hard-delete/`);
     setChannels((prev) => prev.filter((c) => c.id !== channelId));
   }
-
 
   return (
     <div className="space-y-6">
@@ -180,7 +172,7 @@ export default function ChannelsPage() {
             Gerencie suas integrações com WhatsApp
           </p>
         </div>
-        <Button onClick={() => navigate('/channels/new')}>
+        <Button onClick={() => navigate(`${base}/channels/new`)}>
           <Plus className="w-4 h-4 mr-2" />
           Novo Canal
         </Button>
@@ -270,7 +262,7 @@ export default function ChannelsPage() {
               title="Nenhum canal configurado"
               description="Conecte seu primeiro canal WhatsApp para começar a receber mensagens"
               action={
-                <Button onClick={() => navigate('/channels/new')}>
+                <Button onClick={() => navigate(`${base}/channels/new`)}>
                   <Plus className="w-4 h-4 mr-2" />
                   Adicionar Canal
                 </Button>
@@ -323,11 +315,11 @@ export default function ChannelsPage() {
                       </DropdownMenuTrigger>
 
                       <DropdownMenuContent align="end" className="bg-popover">
-                        <DropdownMenuItem onClick={() => navigate(`/channels/${channel.id}/edit`)}>
+                        <DropdownMenuItem onClick={() => navigate(`${base}/channels/${channel.id}/edit`)}>
                           Editar
                         </DropdownMenuItem>
 
-                        <DropdownMenuItem onClick={() => navigate(`/channels/${channel.id}/logs`)}>
+                        <DropdownMenuItem onClick={() => navigate(`${base}/channels/${channel.id}/logs`)}>
                           Ver Logs
                         </DropdownMenuItem>
 
@@ -341,17 +333,14 @@ export default function ChannelsPage() {
                           </DropdownMenuItem>
                         ) : null}
 
-                        {/* Soft delete */}
                         <DropdownMenuItem
                           className="text-destructive"
                           onClick={async () => {
                             try {
                               await softDeleteChannel(channel.id);
                             } catch (err: any) {
-                              // ApiException (do teu api.ts) guarda status em err.status
                               const status = err?.status;
 
-                              // 409 = canal conectado (teu backend faz isso)
                               if (status === 409) {
                                 const wantDisconnect = window.confirm(
                                   "Esse canal está conectado.\n\nOK = Desconectar e remover (soft)\nCancelar = Vou escolher hard-delete na próxima tela"
@@ -373,7 +362,6 @@ export default function ChannelsPage() {
                                 return;
                               }
 
-                              // outros erros
                               alert(err?.message || "Erro ao remover canal.");
                             }
                           }}
@@ -381,8 +369,6 @@ export default function ChannelsPage() {
                           Remover
                         </DropdownMenuItem>
 
-
-                        {/* Hard delete sempre disponível (principalmente se estiver conectado) */}
                         <DropdownMenuItem
                           className="text-destructive"
                           onClick={() => openDeleteDialog(channel, 'hard')}

@@ -2,13 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { User } from '@/lib/auth';
 import { Workspace } from '@/types/api';
 import { clearRefreshToken } from '@/lib/auth';
-import {
-  getAuthToken,
-  getWorkspaceId,
-  setWorkspaceId,
-  getStoredUser,
-  clearAllAuth,
-} from '@/lib/api';
+import { getAuthToken, getStoredUser, clearAllAuth } from '@/lib/api';
+import { clearRuntimeWorkspaceId } from '@/lib/workspaceRuntime';
 
 interface AuthContextType {
   user: User | null;
@@ -18,7 +13,7 @@ interface AuthContextType {
   workspaces: Workspace[];
   setUser: (user: User | null) => void;
   setWorkspaces: (workspaces: Workspace[]) => void;
-  setCurrentWorkspace: (workspace: Workspace) => void;
+  setCurrentWorkspace: (workspace: Workspace | null) => void;
   logout: () => void;
 }
 
@@ -32,39 +27,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const isAuthenticated = !!user && !!getAuthToken();
 
-  const setCurrentWorkspace = useCallback((workspace: Workspace) => {
+  const setCurrentWorkspace = useCallback((workspace: Workspace | null) => {
     setCurrentWorkspaceState(workspace);
-    setWorkspaceId(workspace.id);
   }, []);
 
   const logout = useCallback(() => {
     clearAllAuth();
     clearRefreshToken();
+    clearRuntimeWorkspaceId();
     setUser(null);
     setWorkspaces([]);
     setCurrentWorkspaceState(null);
   }, []);
 
-  // Initialize auth state from localStorage
+  // Initialize auth state from localStorage (somente AUTH)
   useEffect(() => {
     const token = getAuthToken();
     const storedUser = getStoredUser<User>();
-    const storedWorkspaceId = getWorkspaceId();
 
     if (token && storedUser) {
       setUser(storedUser);
-
-      // TODO: buscar workspaces reais via API
-      // Por enquanto, re-hidrata o workspace pelo ID salvo
-      if (storedWorkspaceId) {
-        setCurrentWorkspaceState({
-          id: storedWorkspaceId,
-          name: 'Workspace',
-          slug: 'workspace',
-          role: 'owner',
-          created_at: new Date().toISOString(),
-        });
-      }
     }
 
     setIsLoading(false);

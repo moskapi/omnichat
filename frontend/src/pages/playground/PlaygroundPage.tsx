@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Send, Loader2, FlaskConical, Sparkles, BookOpen, Coins } from 'lucide-react';
 import { PlaygroundResponse } from '@/types/api';
 import { cn } from '@/lib/utils';
+import { askPlayground } from "@/lib/rag";
 
 interface QueryResult {
   question: string;
@@ -23,42 +24,22 @@ export default function PlaygroundPage() {
     if (!question.trim()) return;
 
     setIsLoading(true);
+    try {
+      const response = await askPlayground(question.trim(), 5);
 
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    const mockResponse: PlaygroundResponse = {
-      answer:
-        'Sim, oferecemos 14 dias de teste gratuito em todos os nossos planos! Durante o período de teste, você terá acesso completo a todas as funcionalidades do plano escolhido, sem precisar inserir dados de cartão de crédito. Após o término do período de teste, você pode optar por continuar com um plano pago ou sua conta será automaticamente convertida para o plano gratuito com recursos limitados.',
-      sources: [
+      setResults((prev) => [
         {
-          document_id: 'doc-1',
-          filename: 'faq-atendimento.txt',
-          chunk: '...oferecemos 14 dias de teste gratuito em todos os planos, sem necessidade de cartão de crédito...',
-          score: 0.95,
+          question,
+          response,
+          timestamp: new Date(),
         },
-        {
-          document_id: 'doc-2',
-          filename: 'manual-produto.pdf',
-          chunk: '...ao final do período de teste, a conta será convertida automaticamente para o plano gratuito...',
-          score: 0.82,
-        },
-      ],
-      tokens_used: 347,
-      cost_usd: 0.0012,
-    };
+        ...prev,
+      ]);
 
-    setResults([
-      {
-        question,
-        response: mockResponse,
-        timestamp: new Date(),
-      },
-      ...results,
-    ]);
-
-    setQuestion('');
-    setIsLoading(false);
+      setQuestion("");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

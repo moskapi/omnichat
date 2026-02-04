@@ -1,8 +1,10 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { EmptyState, StatusBadge } from '@/components/common';
+import { listKnowledgeDocuments, uploadKnowledgeDocument, reindexKnowledgeDocument, deleteKnowledgeDocument } from "@/lib/rag";
+
 import {
   BookOpen,
   Upload,
@@ -27,46 +29,6 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { toast } from '@/hooks/use-toast';
 
-// Mock documents
-const mockDocuments: KnowledgeDocument[] = [
-  {
-    id: 'doc-1',
-    filename: 'manual-produto.pdf',
-    file_type: 'pdf',
-    file_size: 2456789,
-    status: 'indexed',
-    chunks_count: 45,
-    created_at: '2024-01-15T10:00:00Z',
-    indexed_at: '2024-01-15T10:05:00Z',
-  },
-  {
-    id: 'doc-2',
-    filename: 'faq-atendimento.txt',
-    file_type: 'txt',
-    file_size: 45678,
-    status: 'indexed',
-    chunks_count: 12,
-    created_at: '2024-02-10T14:30:00Z',
-    indexed_at: '2024-02-10T14:31:00Z',
-  },
-  {
-    id: 'doc-3',
-    filename: 'politica-troca.pdf',
-    file_type: 'pdf',
-    file_size: 1234567,
-    status: 'processing',
-    created_at: new Date().toISOString(),
-  },
-  {
-    id: 'doc-4',
-    filename: 'tabela-precos.pdf',
-    file_type: 'pdf',
-    file_size: 567890,
-    status: 'error',
-    error_message: 'Não foi possível extrair texto do documento',
-    created_at: '2024-03-01T09:00:00Z',
-  },
-];
 
 const statusConfig: Record<DocumentStatus, { label: string; type: 'success' | 'warning' | 'error' }> = {
   indexed: { label: 'Indexado', type: 'success' },
@@ -81,9 +43,27 @@ const formatFileSize = (bytes: number) => {
 };
 
 export default function KnowledgePage() {
-  const [documents, setDocuments] = useState<KnowledgeDocument[]>(mockDocuments);
-  const [isUploading, setIsUploading] = useState(false);
+  const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
+  const [isLoading, setIsLoading] = useState(true); const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        const docs = await listKnowledgeDocuments();
+        if (mounted) setDocuments(docs);
+      } finally {
+        if (mounted) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -91,42 +71,28 @@ export default function KnowledgePage() {
 
     setIsUploading(true);
 
-    // Simulate upload for each file
-    for (const file of Array.from(files)) {
-      const newDoc: KnowledgeDocument = {
-        id: `doc-${Date.now()}`,
-        filename: file.name,
-        file_type: file.name.split('.').pop() as 'pdf' | 'txt',
-        file_size: file.size,
-        status: 'processing',
-        created_at: new Date().toISOString(),
-      };
+    try {
+      for (const file of Array.from(files)) {
+        const doc = await uploadKnowledgeDocument(file);
+        setDocuments((prev) => [doc, ...prev]);
+      }
 
-      setDocuments((prev) => [newDoc, ...prev]);
-
-      // Simulate processing
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      setDocuments((prev) =>
-        prev.map((doc) =>
-          doc.id === newDoc.id
-            ? { ...doc, status: 'indexed', chunks_count: Math.floor(Math.random() * 50) + 10, indexed_at: new Date().toISOString() }
-            : doc
-        )
-      );
-    }
-
-    setIsUploading(false);
-    toast({
-      title: 'Upload concluído',
-      description: `${files.length} documento(s) adicionado(s) à base de conhecimento.`,
-    });
-
-    // Reset input
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+      toast({
+        title: "Upload concluído",
+        description: `${files.length} documento(s) adicionado(s) à base de conhecimento.`,
+      });
+    } catch (e: any) {
+      toast({
+        title: "Erro no upload",
+        description: e?.message || "Não foi possível enviar o documento.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
+
 
   const handleRemoveDocument = (id: string) => {
     setDocuments((prev) => prev.filter((doc) => doc.id !== id));
@@ -270,10 +236,27 @@ export default function KnowledgePage() {
 
                     <div className="flex items-center gap-2">
                       {doc.status === 'error' && (
-                        <Button variant="outline" size="sm">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              const updated = await reindexKnowledgeDocument(doc.id);
+                              setDocuments((prev) => prev.map((d) => (d.id === doc.id ? updated : d)));
+                              toast({ title: "Reprocessado", description: "O documento foi reindexado." });
+                            } catch (e: any) {
+                              toast({
+                                title: "Erro ao reprocessar",
+                                description: e?.message || "Não foi possível reprocessar.",
+                                variant: "destructive",
+                              });
+                            }
+                          }}
+                        >
                           <RefreshCw className="w-4 h-4 mr-2" />
                           Reprocessar
                         </Button>
+
                       )}
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -286,7 +269,20 @@ export default function KnowledgePage() {
                           <DropdownMenuItem>Reprocessar</DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive"
-                            onClick={() => handleRemoveDocument(doc.id)}
+                            onClick={async () => {
+                              try {
+                                await deleteKnowledgeDocument(doc.id);
+                                setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+                                toast({ title: "Removido", description: "Documento apagado com sucesso." });
+                              } catch (e: any) {
+                                toast({
+                                  title: "Erro ao remover",
+                                  description: e?.message || "Não foi possível remover o documento.",
+                                  variant: "destructive",
+                                });
+                              }
+                            }}
+
                           >
                             <Trash2 className="w-4 h-4 mr-2" />
                             Remover
