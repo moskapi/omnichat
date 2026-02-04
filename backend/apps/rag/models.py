@@ -1,9 +1,14 @@
+import uuid
+
 from django.db import models
 from django.utils import timezone
 from pgvector.django import VectorField
 
 
 class KnowledgeDocument(models.Model):
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
     STATUS_PROCESSING = "processing"
     STATUS_INDEXED = "indexed"
     STATUS_ERROR = "error"
@@ -14,7 +19,11 @@ class KnowledgeDocument(models.Model):
     ]
 
     # Por enquanto UUID (compatível com seu header X-Workspace-ID)
-    workspace_id = models.UUIDField(null=True, blank=True, db_index=True)
+    workspace = models.ForeignKey(
+        "tenants.Workspace",
+        on_delete=models.CASCADE,
+        related_name="knowledge_documents",
+    )
 
     filename = models.CharField(max_length=255)
     file_type = models.CharField(max_length=30, blank=True, default="")

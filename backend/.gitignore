@@ -11,9 +11,12 @@ __pycache__/
 .env.*
 venv/
 .venv/
+_venv_host/
+._venv_host/
 ENV/
 env/
 pip-wheel-metadata/
+knowledge/
 
 # Django
 *.log
