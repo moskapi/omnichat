@@ -1,4 +1,5 @@
 import re
+import time
 
 from apps.channels.models import Channel, WorkspaceProvider
 from apps.channels.serializers import (ChannelCreateSerializer,
@@ -7,8 +8,8 @@ from apps.providers.evolution.client import (EvolutionClient,
                                              EvolutionClientError)
 from apps.tenants.mixins import WorkspaceRequiredMixin
 from django.conf import settings
-from django.db import transaction
-from django.utils import timezone
+from django.core.cache import cache
+from django.db import IntegrityError, transaction
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -19,7 +20,7 @@ def normalize_phone_br(raw: str) -> str:
     digits = re.sub(r"\D+", "", raw or "")
     digits = digits.lstrip("0")
 
-    # se vier sem 55, assume BR e prefixa
+    # Se vier sem 55, assume BR e prefixa.
     if digits and not digits.startswith("55"):
         digits = "55" + digits
 
@@ -31,6 +32,95 @@ def normalize_phone_br(raw: str) -> str:
     return digits
 
 
+def extract_pairing_code(payload):
+    """Tenta achar pairing code em formatos variados."""
+    if not isinstance(payload, dict):
+        return None
+
+    def pick(d):
+        if not isinstance(d, dict):
+            return None
+        return d.get("pairingCode") or d.get("pairing_code") or d.get("code")
+
+    code = pick(payload)
+    if code:
+        return code
+
+    for key in ("response", "data", "result", "instance"):
+        code = pick(payload.get(key))
+        if code:
+            return code
+
+    return None
+
+
+def extract_qr_data_url(payload):
+    """
+    Evolution pode devolver QR em formatos diferentes:
+      - payload["qrcode"]["base64"] (às vezes já vem com data:image/png;base64,...)
+      - payload["base64"]
+      - payload["code"] (em alguns builds isso NÃO é base64: vem tipo "2@...,1@...")
+    Queremos devolver:
+      - qr_base64 (somente base64)
+      - qr_data_url (data:image/png;base64,...)
+    """
+    import re
+
+    if not isinstance(payload, dict):
+        return None, None
+
+    # coletar candidatos em ordem de prioridade (mais confiável primeiro)
+    candidates = []
+
+    qrcode = payload.get("qrcode")
+    if isinstance(qrcode, dict):
+        b64 = qrcode.get("base64")
+        if b64:
+            candidates.append(b64)
+
+    if payload.get("base64"):
+        candidates.append(payload.get("base64"))
+
+    # code é o mais suspeito (às vezes NÃO é base64)
+    if payload.get("code"):
+        candidates.append(payload.get("code"))
+
+    def normalize(v: str):
+        if not isinstance(v, str):
+            return None, None
+        v = v.strip()
+        if not v:
+            return None, None
+
+        # já é data url
+        if v.startswith("data:image"):
+            # extrai base64 se for possível
+            if "base64," in v:
+                return v.split("base64,", 1)[1].strip(), v
+            return None, v
+
+        # se tiver caracteres típicos de "code" (2@..., vírgulas, @), NÃO é base64
+        if ("@" in v) or ("," in v):
+            return None, None
+
+        # valida aparência de base64 (bem permissivo, mas barra coisas bizarras)
+        if not re.fullmatch(r"[A-Za-z0-9+/=\s]+", v):
+            return None, None
+
+        b64 = v.replace("\n", "").replace("\r", "").strip()
+        if len(b64) < 50:
+            return None, None
+
+        return b64, f"data:image/png;base64,{b64}"
+
+    for c in candidates:
+        b64, url = normalize(c)
+        if b64 or url:
+            return b64, url
+
+    return None, None
+
+
 class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
@@ -40,163 +130,260 @@ class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
             workspace=workspace,
             provider=WorkspaceProvider.Provider.EVOLUTION,
             defaults={
-                # LOCAL: usa o docker internal DNS
+                # Dentro do docker, o backend fala com o service "evolution:8080"
                 "base_url": getattr(settings, "EVOLUTION_BASE_URL", None) or "http://evolution:8080",
                 "api_key": getattr(settings, "EVOLUTION_API_KEY", None) or "dev_key",
                 "status": WorkspaceProvider.Status.READY,
             },
         )
 
-        # LOCAL: se por algum motivo não estiver READY, marca READY
         if wp.status != WorkspaceProvider.Status.READY:
             wp.status = WorkspaceProvider.Status.READY
             wp.save(update_fields=["status", "updated_at"])
 
         return wp
 
-    def list(self, request, *args, **kwargs):
-        # (deixe esse debug só enquanto estiver validando)
-        print("=== DEBUG /channels list ===")
-        print("Authorization:", request.headers.get("Authorization"))
-        print("X-Workspace-ID:", request.headers.get("X-Workspace-ID"))
-        print("request.workspace:", getattr(request, "workspace", None))
-        return super().list(request, *args, **kwargs)
+    def _client_for_workspace(self, workspace) -> EvolutionClient:
+        wp = self._get_or_create_workspace_evolution(workspace)
+        return EvolutionClient(base_url=wp.base_url, api_key=wp.api_key)
 
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        channel = serializer.save()
-        return Response(ChannelSerializer(channel).data, status=status.HTTP_201_CREATED)
+    def _ensure_instance_name(self, request, channel: Channel):
+        # ✅ INSTÂNCIA POR CANAL:
+        # external_id = "wsp-<workspace_id>__ch-<channel_id>"
+        if not channel.external_id:
+            channel.external_id = f"wsp-{request.workspace.id}__ch-{channel.id}"
+            channel.save(update_fields=["external_id"])
+        return channel.external_id
+
+    # ---------- DRF basics ----------
 
     def get_queryset(self):
-        include_deleted = self.request.query_params.get("include_deleted")
-        include_deleted = (include_deleted or "").strip().lower() in {
-            "1", "true", "t", "yes", "y"}
-
-        queryset = Channel.objects.filter(workspace=self.request.workspace)
-
-        if not include_deleted:
-            queryset = queryset.filter(deleted_at__isnull=True)
-
-        queryset = queryset.order_by("-created_at")
+        qs = Channel.objects.filter(
+            workspace=self.request.workspace).order_by("-created_at")
 
         provider = self.request.query_params.get("provider")
         if provider:
-            queryset = queryset.filter(provider=provider)
+            qs = qs.filter(provider=provider)
 
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             normalized = is_active.strip().lower()
             if normalized in {"true", "1", "t", "yes", "y"}:
-                queryset = queryset.filter(is_active=True)
+                qs = qs.filter(is_active=True)
             elif normalized in {"false", "0", "f", "no", "n"}:
-                queryset = queryset.filter(is_active=False)
+                qs = qs.filter(is_active=False)
 
-        return queryset
+        return qs
 
     def get_serializer_class(self):
         if self.action == "create":
             return ChannelCreateSerializer
         return ChannelSerializer
 
+    def create(self, request, *args, **kwargs):
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        # Se existir um canal soft-deletado com o mesmo nome no workspace,
+        # "revive" ele em vez de explodir com UniqueConstraint.
+        existing = Channel.objects.filter(
+            workspace=request.workspace, name=ser.validated_data.get("name")
+        ).first()
+
+        if existing and existing.is_deleted:
+            existing.deleted_at = None
+            existing.provider = ser.validated_data.get("provider")
+            # Evolution: external_id será definido só quando conectar
+            if existing.provider == Channel.Provider.EVOLUTION:
+                existing.external_id = None
+                existing.is_active = False
+            else:
+                existing.is_active = True
+            existing.save()
+            return Response(ChannelSerializer(existing).data, status=status.HTTP_200_OK)
+
+        try:
+            channel = ser.save()
+        except IntegrityError as e:
+            msg = str(e).lower()
+            if "uniq_channel_name_per_workspace" in msg or "channels_channel_workspace_id_name" in msg:
+                return Response(
+                    {"detail": "Já existe um canal com esse nome neste workspace."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response(
+                {"detail": "Erro de integridade ao criar canal.",
+                    "error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(ChannelSerializer(channel).data, status=status.HTTP_201_CREATED)
+
+    # ---------- Evolution connect/status ----------
+
     @action(detail=True, methods=["post"], url_path="evolution/connect")
     def evolution_connect(self, request, pk=None):
+        """
+        Fluxo (robusto para Baileys/QR):
+          1) cria instância (tolerante a already exists)
+          2) tenta pairing_code se prefer_pairing=true e number existir
+          3) tenta gerar QR por GET /instance/connect/{instance} (sem number)
+             - alguns builds retornam {"count":0} por alguns segundos -> fazemos retry até qr_timeout_s
+          4) se não veio QR, tenta pairing_code como fallback (se number existir)
+        """
         channel = self.get_object()
 
         if channel.provider != Channel.Provider.EVOLUTION:
-            return Response(
-                {"detail": "Channel provider is not evolution."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Channel provider is not evolution."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # garante workspace evolution "READY"
-        wp = self._get_or_create_workspace_evolution(request.workspace)
+        client = self._client_for_workspace(request.workspace)
+        instance_name = self._ensure_instance_name(request, channel)
 
-        # instanceName único por canal
-        if not channel.external_id:
-            channel.external_id = f"wsp-{request.workspace.id}__ch-{channel.id}"
-            channel.save(update_fields=["external_id"])
-
-        client = EvolutionClient(base_url=wp.base_url, api_key=wp.api_key)
-
-        # phone_number é obrigatório (pairing only)
         phone_raw = request.data.get(
-            "phone_number") or request.data.get("number")
-        if not phone_raw:
-            return Response(
-                {"detail": "phone_number é obrigatório para conexão via Pairing Code."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            "phone_number") or request.data.get("number") or ""
+        prefer_pairing = bool(request.data.get("prefer_pairing"))
+        timeout_s = int(request.data.get("qr_timeout_s") or 45)
 
-        try:
-            number = normalize_phone_br(phone_raw)
-        except ValueError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        number = None
+        if phone_raw:
+            try:
+                number = normalize_phone_br(phone_raw)
+            except ValueError as e:
+                return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         # 1) cria instância
         create_payload = None
         try:
-            create_payload = client.create_instance(
-                channel.external_id, integration="WHATSAPP-BAILEYS")
-
+            create_payload = client.create_instance(instance_name)
         except EvolutionClientError as e:
-            # permite seguir se a instância já existir
             msg = str(e).lower()
             if "already" in msg and "exist" in msg:
                 create_payload = {"warning": "instance already exists"}
             else:
                 return Response(
+                    {"detail": "Falha ao criar instância na Evolution.",
+                        "instance": instance_name, "error": str(e)},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+
+        # 1.5) settings (best-effort)
+        settings_payload = None
+        try:
+            settings_payload = client.set_settings(
+                instance_name,
+                {
+                    "preferQr": True,
+                    "preferPairingCode": False,  # Baileys em alguns builds não retorna code
+                    "linkingMode": "qr",
+                    "pairing": False,
+                    "qrcode": True,
+                    "mode": "qr",
+                },
+            )
+        except EvolutionClientError:
+            settings_payload = {"warning": "set_settings failed (best-effort)"}
+
+        # 2) pairing preferencial (se pedido)
+        pairing_payload = None
+        pairing_code = None
+        if prefer_pairing and number:
+            try:
+                pairing_payload = client.connect_pairing_code(
+                    instance_name, number=number)
+                pairing_code = extract_pairing_code(pairing_payload)
+            except EvolutionClientError:
+                pairing_payload = {
+                    "warning": "pairing connect failed (ignored)"}
+
+            if pairing_code:
+                return Response(
                     {
-                        "detail": "Falha ao criar instância na Evolution.",
-                        "instance": channel.external_id,
+                        "channel_id": str(channel.id),
+                        "instance": instance_name,
+                        "connection_mode": "pairing",
+                        "pairing_code": pairing_code,
+                        "raw": {"create": create_payload, "settings": settings_payload, "pairing": pairing_payload},
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+        # 3) QR FLOW: retry até timeout_s
+        last_qr_payload = None
+        qr_base64 = None
+        qr_data_url = None
+
+        t0 = time.time()
+        while time.time() - t0 < timeout_s:
+            try:
+                last_qr_payload = client._request(
+                    "GET", f"/instance/connect/{instance_name}")
+            except EvolutionClientError as e:
+                return Response(
+                    {
+                        "detail": "Falha ao gerar QR Code na Evolution.",
+                        "channel_id": str(channel.id),
+                        "instance": instance_name,
                         "error": str(e),
+                        "raw": {"create": create_payload, "settings": settings_payload, "pairing": pairing_payload},
                     },
                     status=status.HTTP_502_BAD_GATEWAY,
                 )
 
-        # 2) pede pairing code
-        try:
-            pairing_payload = client.connect_pairing_code(
-                channel.external_id, number=number)
-        except EvolutionClientError as e:
-            return Response(
-                {
-                    "detail": "Falha ao gerar Pairing Code na Evolution.",
-                    "channel_id": str(channel.id),
-                    "instance": channel.external_id,
-                    "error": str(e),
-                    "raw": {"create": create_payload},
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            qr_base64, qr_data_url = extract_qr_data_url(last_qr_payload)
 
-        pairing_code = None
-        if isinstance(pairing_payload, dict):
-            pairing_code = (
-                pairing_payload.get("pairingCode")
-                or pairing_payload.get("pairing_code")
-                or pairing_payload.get("code")
-            )
+            if qr_base64 or qr_data_url:
+                break
 
-        # se não veio código, devolve 502 com raw (pra debugar sem adivinhar)
-        if not pairing_code:
-            return Response(
-                {
-                    "detail": "Evolution não retornou pairing_code.",
-                    "channel_id": str(channel.id),
-                    "instance": channel.external_id,
-                    "raw": {"create": create_payload, "connect": pairing_payload},
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            # fallback extra: se algum webhook seu salvar no cache
+            cached = cache.get(f"evo:qr:{instance_name}")
+            if cached:
+                qr_base64 = cached
+                qr_data_url = f"data:image/png;base64,{cached}"
+                break
 
+            time.sleep(2)
+
+        # 4) se ainda não veio QR, tenta pairing (se tiver number)
+        if not qr_base64 and not qr_data_url and number:
+            try:
+                pairing_payload2 = client.connect_pairing_code(
+                    instance_name, number=number)
+                pairing_code2 = extract_pairing_code(pairing_payload2)
+                if pairing_code2:
+                    return Response(
+                        {
+                            "channel_id": str(channel.id),
+                            "instance": instance_name,
+                            "connection_mode": "pairing",
+                            "pairing_code": pairing_code2,
+                            "raw": {
+                                "create": create_payload,
+                                "settings": settings_payload,
+                                "pairing_fallback": pairing_payload2,
+                                "connect": last_qr_payload,
+                            },
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+            except EvolutionClientError:
+                pass
+
+        # Mesmo sem QR, devolve 200 (frontend pode re-chamar /connect/).
         return Response(
             {
                 "channel_id": str(channel.id),
-                "instance": channel.external_id,
-                "pairing_code": pairing_code,
-                "raw": {"create": create_payload, "connect": pairing_payload},
-            }
+                "instance": instance_name,
+                "connection_mode": "qr",
+                "qr_base64": qr_base64,
+                "qr_data_url": qr_data_url,
+                "raw": {
+                    "create": create_payload,
+                    "settings": settings_payload,
+                    "pairing": pairing_payload,
+                    "connect": last_qr_payload,
+                },
+            },
+            status=status.HTTP_200_OK,
         )
 
     @action(detail=True, methods=["get"], url_path="evolution/status")
@@ -204,13 +391,9 @@ class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
         channel = self.get_object()
 
         if channel.provider != Channel.Provider.EVOLUTION or not channel.external_id:
-            return Response(
-                {"detail": "Evolution not initialized for this channel."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Evolution not initialized for this channel."}, status=status.HTTP_400_BAD_REQUEST)
 
-        wp = self._get_or_create_workspace_evolution(request.workspace)
-        client = EvolutionClient(base_url=wp.base_url, api_key=wp.api_key)
+        client = self._client_for_workspace(request.workspace)
         st = client.get_status(channel.external_id)
 
         def pick_state(obj):
@@ -254,86 +437,57 @@ class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
             }
         )
 
+    # ---------- Remove / Hard delete ----------
+
     def destroy(self, request, *args, **kwargs):
+        """Soft remove do canal. Se for Evolution, tenta logout best-effort."""
         channel = self.get_object()
 
-        # ✅ bloqueia se estiver conectado
-        if channel.is_active:
-            return Response(
-                {"detail": "Canal está conectado. Desconecte antes ou use hard-delete."},
-                status=status.HTTP_409_CONFLICT,
-            )
+        if channel.provider == Channel.Provider.EVOLUTION and channel.external_id:
+            try:
+                client = self._client_for_workspace(request.workspace)
+                client.logout_instance(channel.external_id)
+            except Exception:
+                pass
 
-        # ✅ soft delete
-        if getattr(channel, "deleted_at", None) is None:
-            channel.deleted_at = timezone.now()
-            channel.save(update_fields=["deleted_at", "updated_at"])
-
-        if channel.deleted_at:
-            return Response(status=status.HTTP_204_NO_CONTENT)
-
+        channel.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-    @action(detail=True, methods=["post"], url_path="disconnect")
-    def disconnect(self, request, pk=None):
-        channel = self.get_object()
-
-        if channel.provider != Channel.Provider.EVOLUTION or not channel.external_id:
-            return Response({"detail": "Canal não é Evolution ou não inicializado."}, status=400)
-
-        wp = self._get_or_create_workspace_evolution(request.workspace)
-        client = EvolutionClient(base_url=wp.base_url, api_key=wp.api_key)
-
-        try:
-            client.logout_instance(channel.external_id)
-        except Exception as e:
-            return Response({"detail": "Falha ao desconectar.", "error": str(e)}, status=502)
-
-        # Atualiza estado local
-        if channel.is_active:
-            channel.is_active = False
-            channel.save(update_fields=["is_active", "updated_at"])
-
-        return Response({"detail": "Desconectado com sucesso."})
 
     @action(detail=True, methods=["post"], url_path="hard-delete")
     def hard_delete(self, request, pk=None):
+        """Logout + delete da instância na Evolution; depois remove do DB."""
         channel = self.get_object()
 
-        # 1) Se for EVOLUTION: tenta derrubar e apagar instância
-        if channel.provider == Channel.Provider.EVOLUTION and channel.external_id:
-            wp = self._get_or_create_workspace_evolution(request.workspace)
-            client = EvolutionClient(base_url=wp.base_url, api_key=wp.api_key)
-
-            # tenta logout (não impede continuar)
-            try:
-                client.logout_instance(channel.external_id)
-            except Exception as e:
-                print("WARN hard-delete: logout_instance falhou:", e)
-
-            # delete instance: se falhar, eu BLOQUEIO o hard delete
-            # (pra não deixar instância órfã na Evolution)
-            try:
-                client.delete_instance(channel.external_id)
-            except EvolutionClientError as e:
-                # ✅ se não existe instância, segue o hard-delete mesmo assim
-                if e.status_code == 404:
-                    pass
-                else:
-                    return Response(
-                        {
-                            "detail": "Falha ao deletar instância na Evolution. Canal não foi removido.",
-                            "instance": channel.external_id,
-                            "status_code": e.status_code,
-                            "error": str(e),
-                            "payload": getattr(e, "payload", None),
-                        },
-                        status=status.HTTP_502_BAD_GATEWAY,
-
-                    )
-
-        # 2) Apaga o channel do banco (hard)
-        with transaction.atomic():
+        if channel.provider != Channel.Provider.EVOLUTION or not channel.external_id:
             channel.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        client = self._client_for_workspace(request.workspace)
+        instance_name = channel.external_id
+
+        with transaction.atomic():
+            logout_payload = None
+            try:
+                logout_payload = client.logout_instance(instance_name)
+            except Exception as e:
+                logout_payload = {"warning": "logout failed", "error": str(e)}
+
+            try:
+                delete_payload = client.delete_instance(instance_name)
+            except EvolutionClientError as e:
+                return Response(
+                    {
+                        "detail": "Falha ao deletar instância na Evolution.",
+                        "instance": instance_name,
+                        "error": str(e),
+                        "raw": {"logout": logout_payload},
+                    },
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+
+            channel.delete()
+            return Response(
+                {"ok": True, "instance": instance_name, "raw": {
+                    "logout": logout_payload, "delete": delete_payload}},
+                status=status.HTTP_200_OK,
+            )

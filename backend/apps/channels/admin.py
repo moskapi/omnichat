@@ -1,3 +1,6 @@
 from django.contrib import admin
 
-# Register your models here.
+from .models import Channel, WorkspaceProvider
+
+admin.site.register(WorkspaceProvider)
+admin.site.register(Channel)

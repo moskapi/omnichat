@@ -87,3 +87,8 @@ class EvolutionClient:
             "GET",
             f"/instance/connect/{instance_name}?number={number}",
         )
+
+    def set_settings(self, instance_name: str, settings_payload: dict):
+        # Endpoint comum da Evolution para settings:
+        # POST /settings/set/{instance}
+        return self._request("POST", f"/settings/set/{instance_name}", json=settings_payload)
