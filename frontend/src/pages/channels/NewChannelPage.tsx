@@ -1,90 +1,60 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { ArrowLeft, ArrowRight, Check, AlertTriangle, Loader2, Shield, Zap } from 'lucide-react';
-import { ChannelProvider } from '@/types/api';
-import { cn } from '@/lib/utils';
+import { ArrowLeft } from 'lucide-react';
 import { api } from '@/lib/api';
+
+type WizardStep = 1 | 2 | 3;
 
 type ChannelDTO = {
   id: string;
   name: string;
-  provider: 'evolution' | 'whatsapp_official';
-  external_id?: string | null;
-  is_active: boolean;
+  provider: string;
+  is_active?: boolean;
 };
 
 type EvolutionConnectDTO = {
-  channel_id: string;
-  instance: string;
-
-  // Pairing
+  channel_id?: string;
+  instance?: string;
+  connection_mode?: 'qr' | 'pairing';
   pairing_code?: string | null;
-
-  // QR (fallback / compat)
   qr_base64?: string | null;
   qr_data_url?: string | null;
-
   raw?: any;
-  error?: string;
 };
 
 type EvolutionStatusDTO = {
-  channel_id: string;
-  instance: string;
-  status: unknown;
-  is_active: boolean;
+  channel_id?: string;
+  instance?: string;
   state?: string;
+  is_active?: boolean;
+  status?: any;
 };
 
-type WizardStep = 1 | 2 | 3;
+function pickQrDataUrl(connect: any): string | null {
+  if (!connect) return null;
 
-interface ChannelFormData {
-  name: string;
-  provider: ChannelProvider | null;
-  riskAccepted: boolean;
-  credentials: {
-    // Official (ainda não estamos salvando isso no backend aqui)
-    token?: string;
-    phone_number_id?: string;
-    webhook_verify_token?: string;
+  // Priorize o que o backend já devolve pronto
+  const direct =
+    connect.qr_data_url ||
+    connect.qrDataUrl ||
+    connect.qr ||
+    connect.qrCode ||
+    null;
 
-    // Evolution (não precisa credenciais no frontend; vamos pedir só telefone pra pairing)
-    base_url?: string;
-    instance_id?: string;
-    api_key?: string;
-  };
-}
-
-function pickQrDataUrl(payload: any): string | null {
-  if (!payload) return null;
-
-  // novo contrato do backend
-  const direct = payload?.qr_data_url;
-  if (typeof direct === 'string' && direct.startsWith('data:image')) return direct;
-
-  const b64 = payload?.qr_base64;
-  if (typeof b64 === 'string' && b64.length > 20) return `data:image/png;base64,${b64}`;
-
-  // fallback (compat)
-  const qr = payload?.qr ?? payload ?? null;
-  if (!qr) return null;
+  if (direct && typeof direct === 'string' && direct.startsWith('data:image')) return direct;
 
   const candidates = [
-    qr?.base64,
-    qr?.qrcode,
-    qr?.qrCode,
-    qr?.qr,
-    qr?.code,
-    qr?.data,
-    payload?.base64,
-    payload?.qrcode,
+    connect.qr_base64,
+    connect.qrBase64,
+    connect.base64,
+    connect?.qrcode?.base64,
+    connect?.qr?.base64,
   ].filter(Boolean);
 
   const v = candidates[0];
@@ -97,89 +67,94 @@ function pickQrDataUrl(payload: any): string | null {
 }
 
 function normalizePhoneDigits(raw: string): string {
-  // frontend: só limpa (backend idealmente valida/normaliza também)
   return (raw || '').replace(/\D+/g, '');
+}
+
+function formatPhoneMaskBR(raw: string): string {
+  const digits = normalizePhoneDigits(raw).slice(0, 11); // DDD + 9 dígitos
+  const ddd = digits.slice(0, 2);
+  const part1 = digits.slice(2, 7);
+  const part2 = digits.slice(7, 11);
+
+  if (!digits) return '';
+  if (digits.length <= 2) return `(${ddd}`;
+  if (digits.length <= 7) return `(${ddd})${part1}`;
+  return `(${ddd})${part1}-${part2}`;
 }
 
 export default function NewChannelPage() {
   const navigate = useNavigate();
+  const { workspaceId } = useParams();
+
+  const channelsUrl = workspaceId ? `/w/${workspaceId}/channels` : '/workspaces';
+
   const [currentStep, setCurrentStep] = useState<WizardStep>(1);
   const [isSaving, setIsSaving] = useState(false);
-  const [formData, setFormData] = useState<ChannelFormData>({
-    name: '',
-    provider: null,
-    riskAccepted: false,
-    credentials: {},
-  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Evolution connect states
   const [createdChannelId, setCreatedChannelId] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [pollFallbackTried, setPollFallbackTried] = useState(false);
+  const [lastPhoneDigits, setLastPhoneDigits] = useState<string | null>(null);
 
   // Pairing / QR
   const [phoneNumber, setPhoneNumber] = useState('');
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [qrSrc, setQrSrc] = useState<string | null>(null);
 
-  const [debugInfo, setDebugInfo] = useState<string | null>(null);
-  const [debugRaw, setDebugRaw] = useState<string | null>(null);
-
-
   const steps = [
     { number: 1, title: 'Nome' },
     { number: 2, title: 'Provider' },
-    { number: 3, title: 'Credenciais' },
+    { number: 3, title: 'Configuração' },
   ];
 
-  const isEvolution = formData.provider === 'evolution';
-  const isOfficial = formData.provider === 'whatsapp_official';
+  const [formData, setFormData] = useState({
+    name: '',
+    provider: '' as '' | 'evolution' | 'whatsapp_official',
+    credentials: {
+      token: '',
+      phone_number_id: '',
+      business_account_id: '',
+    },
+    options: {
+      autoReply: false,
+      autoReplyMessage: 'Olá! Em instantes um atendente responderá.',
+    },
+  });
 
   const canProceed = useMemo(() => {
-    switch (currentStep) {
-      case 1:
-        return formData.name.trim().length >= 3;
-      case 2:
-        return formData.provider !== null && (formData.provider === 'whatsapp_official' || formData.riskAccepted);
-      case 3:
-        if (isOfficial) {
-          return (
-            !!formData.credentials.token &&
-            !!formData.credentials.phone_number_id &&
-            !!formData.credentials.webhook_verify_token
-          );
-        }
-        if (isEvolution) {
-          // vamos exigir telefone para pairing (mesmo que backend ainda esteja em QR, isso não atrapalha)
-          return normalizePhoneDigits(phoneNumber).length >= 10;
-        }
-        return false;
-      default:
-        return false;
+    if (currentStep === 1) return formData.name.trim().length >= 2;
+    if (currentStep === 2) return !!formData.provider;
+    if (currentStep === 3) {
+      if (formData.provider === 'whatsapp_official') {
+        return (
+          !!formData.credentials.token &&
+          !!formData.credentials.phone_number_id &&
+          !!formData.credentials.business_account_id
+        );
+      }
+      return true;
     }
-  }, [currentStep, formData, isOfficial, isEvolution, phoneNumber]);
+    return false;
+  }, [currentStep, formData]);
 
   const handleNext = () => {
     setErrorMessage(null);
-    if (currentStep < 3) {
-      setCurrentStep((currentStep + 1) as WizardStep);
-    }
+    if (currentStep < 3) setCurrentStep((currentStep + 1) as WizardStep);
   };
 
   const handleBack = () => {
     setErrorMessage(null);
-    if (currentStep > 1) {
-      setCurrentStep((currentStep - 1) as WizardStep);
-    }
+    if (currentStep > 1) setCurrentStep((currentStep - 1) as WizardStep);
   };
 
   const handleSave = async () => {
     setIsSaving(true);
     setErrorMessage(null);
 
-
-    const providerValue = formData.provider; // 'evolution' | 'whatsapp_official'
+    const providerValue = formData.provider;
 
     if (!providerValue) {
       setErrorMessage('Selecione um provider.');
@@ -187,7 +162,6 @@ export default function NewChannelPage() {
       return;
     }
 
-    // payload mínimo compatível com ChannelCreateSerializer (name + provider)
     const payload = {
       name: formData.name.trim(),
       provider: providerValue,
@@ -198,70 +172,97 @@ export default function NewChannelPage() {
       const createdRes = await api.post<ChannelDTO>('/channels/', payload);
       const created = (createdRes as any)?.data ?? createdRes;
 
-      // 2) Evolution: conectar (pairing code preferencial, QR fallback)
+      // 2) Evolution: conectar
       if (created?.provider === 'evolution') {
         setCreatedChannelId(created.id);
         setConnecting(true);
         setPairingCode(null);
         setQrSrc(null);
+        setPollFallbackTried(false);
+
+        const digits = normalizePhoneDigits(phoneNumber);
+        setLastPhoneDigits(digits || null);
 
         try {
-          const digits = normalizePhoneDigits(phoneNumber);
-
-          // manda phone_number para pairing code (quando backend suportar)
+          // conecta (QR)
           const connectRes = await api.post<EvolutionConnectDTO>(
             `/channels/${created.id}/evolution/connect/`,
-            digits ? { phone_number: digits } : undefined
+            {
+              phone_number: digits || undefined,
+              qr_timeout_s: 45,
+              prefer_pairing: false,
+            },
+            { timeout: 70000 }
           );
 
           const connect = (connectRes as any)?.data ?? connectRes;
 
-          // Pairing code (novo)
           const pc =
             connect?.pairing_code ??
             connect?.pairingCode ??
-            connect?.code ??
             null;
 
-          if (pc) {
-            setPairingCode(String(pc));
-            setPolling(true);
-            setIsSaving(false);
-            return; // fica na tela para o usuário digitar o código no WhatsApp
+          if (pc) setPairingCode(String(pc));
+
+          const qr = pickQrDataUrl(connect);
+          if (qr) setQrSrc(qr);
+
+          // fallback (pairing) se não veio nada
+          if (!pc && !qr && digits && !pollFallbackTried) {
+            setPollFallbackTried(true);
+
+            const connectRes2 = await api.post<EvolutionConnectDTO>(
+              `/channels/${created.id}/evolution/connect/`,
+              {
+                phone_number: digits,
+                qr_timeout_s: 10,
+                prefer_pairing: true,
+              },
+              { timeout: 30000 }
+            );
+
+            const connect2 = (connectRes2 as any)?.data ?? connectRes2;
+
+            const pc2 =
+              connect2?.pairing_code ??
+              connect2?.pairingCode ??
+              null;
+
+            if (pc2) setPairingCode(String(pc2));
+
+            const qr2 = pickQrDataUrl(connect2);
+            if (qr2) setQrSrc(qr2);
+
+            if (!pc2 && !qr2) {
+              setPolling(false);
+              setErrorMessage('Não foi possível obter QR nem pareamento por código. Tente novamente.');
+              return;
+            }
           }
 
-          // Fallback para QR (contrato atual)
-          const src = pickQrDataUrl(connect);
-          setQrSrc(src);
-
-          if (!src) {
-            // Ajuda debugging
-            console.log('Evolution connect raw:', connect?.raw ?? connect);
-          }
-
+          setConnecting(false);
           setPolling(true);
+          return;
+        } catch (err: any) {
+          setConnecting(false);
+          setPolling(false);
+          const detail = err?.response?.data?.detail;
+          setErrorMessage(detail || err?.message || 'Erro ao conectar com Evolution');
+          console.error('EVOLUTION CONNECT ERROR:', err);
+          return;
         } finally {
           setConnecting(false);
         }
-
-        // fica na tela pra usuário parear/escanejar
-        setIsSaving(false);
-        return;
       }
 
-      // 3) caso oficial: navega
-      navigate('/channels');
+      // 3) caso oficial
+      navigate(channelsUrl, { replace: true });
     } catch (err: any) {
-      console.log("EVOLUTION CONNECT ERROR:", err);
-      console.log("status:", err?.status);
-      console.log("data:", err?.data);
-      console.log("original axios response:", err?.original?.response);
-
-      setErrorMessage(err?.message || "Erro ao conectar");
-
-      if (err?.data) {
-        setDebugRaw(JSON.stringify(err.data, null, 2));
-      }
+      const detail = err?.response?.data?.detail;
+      setErrorMessage(detail || err?.message || 'Erro ao criar canal');
+      console.error('CREATE CHANNEL ERROR:', err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -269,23 +270,68 @@ export default function NewChannelPage() {
   useEffect(() => {
     if (!polling || !createdChannelId) return;
 
+    let stopped = false;
+
     const t = setInterval(async () => {
+      if (stopped) return;
+
       try {
-        const stRes = await api.get<EvolutionStatusDTO>(`/channels/${createdChannelId}/evolution/status/`);
+        const stRes = await api.get<EvolutionStatusDTO>(
+          `/channels/${createdChannelId}/evolution/status/`
+        );
         const st = (stRes as any)?.data ?? stRes;
 
         if (st?.is_active) {
+          stopped = true;
           setPolling(false);
           clearInterval(t);
-          navigate('/channels');
+          navigate(channelsUrl, { replace: true });
         }
       } catch {
-        // silencioso por enquanto
+        // silencioso
       }
     }, 2000);
 
-    return () => clearInterval(t);
-  }, [polling, createdChannelId, navigate]);
+    // Se ficar muito tempo sem ativar, tenta UMA vez fallback para pairing (se tiver telefone)
+    const timeout = setTimeout(async () => {
+      if (stopped) return;
+
+      if (lastPhoneDigits && !pollFallbackTried) {
+        try {
+          setPollFallbackTried(true);
+
+          const connectRes = await api.post<EvolutionConnectDTO>(
+            `/channels/${createdChannelId}/evolution/connect/`,
+            {
+              phone_number: lastPhoneDigits,
+              qr_timeout_s: 10,
+              prefer_pairing: true,
+            }
+          );
+
+          const connect = (connectRes as any)?.data ?? connectRes;
+
+          const pc =
+            connect?.pairing_code ??
+            connect?.pairingCode ??
+            null;
+
+          if (pc) setPairingCode(String(pc));
+
+          const qr = pickQrDataUrl(connect);
+          if (qr) setQrSrc(qr);
+        } catch {
+          // ignora
+        }
+      }
+    }, 60000);
+
+    return () => {
+      stopped = true;
+      clearInterval(t);
+      clearTimeout(timeout);
+    };
+  }, [polling, createdChannelId, navigate, lastPhoneDigits, pollFallbackTried, channelsUrl]);
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -294,7 +340,7 @@ export default function NewChannelPage() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => navigate('/channels')}
+          onClick={() => navigate(channelsUrl)}
           className="mb-4"
         >
           <ArrowLeft className="w-4 h-4 mr-2" />
@@ -307,165 +353,160 @@ export default function NewChannelPage() {
       </div>
 
       {/* Steps Indicator */}
-      <div className="flex items-center justify-between mb-8">
-        {steps.map((step, index) => (
+      <div className="flex justify-between mb-8">
+        {steps.map((step) => (
           <div key={step.number} className="flex items-center">
             <div
-              className={cn(
-                'flex items-center justify-center w-8 h-8 rounded-full text-sm font-medium transition-colors',
-                currentStep >= step.number
+              className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${currentStep >= step.number
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-muted text-muted-foreground'
-              )}
+                }`}
             >
-              {currentStep > step.number ? <Check className="w-4 h-4" /> : step.number}
+              {step.number}
             </div>
-            <span
-              className={cn(
-                'ml-2 text-sm font-medium',
-                currentStep >= step.number ? 'text-foreground' : 'text-muted-foreground'
-              )}
-            >
+            <span className="ml-2 text-sm font-medium text-foreground">
               {step.title}
             </span>
-            {index < steps.length - 1 && (
-              <div
-                className={cn(
-                  'w-12 h-0.5 mx-4',
-                  currentStep > step.number ? 'bg-primary' : 'bg-muted'
-                )}
-              />
-            )}
           </div>
         ))}
       </div>
 
       {/* Error Alert */}
       {errorMessage && (
-        <Alert variant="destructive" className="mb-6 animate-fade-in">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>Erro ao criar canal</AlertTitle>
+        <Alert variant="destructive" className="mb-6">
+          <AlertTitle>Erro</AlertTitle>
           <AlertDescription>{errorMessage}</AlertDescription>
         </Alert>
       )}
 
       {/* Step Content */}
-      <Card>
-        <CardContent className="pt-6">
-          {/* Step 1: Name */}
+      <Card className="mb-6">
+        <CardContent className="p-6">
           {currentStep === 1 && (
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="channel-name">Nome do Canal</Label>
-                <Input
-                  id="channel-name"
-                  placeholder="Ex: WhatsApp Principal"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="mt-2"
-                />
-                <p className="text-xs text-muted-foreground mt-2">
-                  Escolha um nome que identifique facilmente este canal
-                </p>
+            <div>
+              <Label htmlFor="name">Nome do Canal</Label>
+              <Input
+                id="name"
+                placeholder="Ex: WhatsApp Principal"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className="mt-2"
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                Use um nome fácil de identificar para este canal
+              </p>
+            </div>
+          )}
+
+          {currentStep === 2 && (
+            <div>
+              <Label>Selecione o Provider</Label>
+
+              <div className="space-y-4 mt-4">
+                <div
+                  className={`p-4 rounded-lg border cursor-pointer transition-colors ${formData.provider === 'evolution'
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:bg-muted/50'
+                    }`}
+                  onClick={() => setFormData({ ...formData, provider: 'evolution' })}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="font-medium text-foreground">Evolution API</h3>
+                      <p className="text-sm text-muted-foreground">
+                        WhatsApp via Baileys (QR ou pareamento)
+                      </p>
+                    </div>
+                    <div
+                      className={`w-4 h-4 rounded-full border-2 ${formData.provider === 'evolution'
+                          ? 'border-primary bg-primary'
+                          : 'border-muted-foreground'
+                        }`}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  className={`p-4 rounded-lg border cursor-pointer transition-colors ${formData.provider === 'whatsapp_official'
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:bg-muted/50'
+                    }`}
+                  onClick={() => setFormData({ ...formData, provider: 'whatsapp_official' })}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="font-medium text-foreground">
+                        WhatsApp Official (Cloud API)
+                      </h3>
+                      <p className="text-sm text-muted-foreground">
+                        Integração oficial via Meta
+                      </p>
+                    </div>
+                    <div
+                      className={`w-4 h-4 rounded-full border-2 ${formData.provider === 'whatsapp_official'
+                          ? 'border-primary bg-primary'
+                          : 'border-muted-foreground'
+                        }`}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           )}
 
-          {/* Step 2: Provider */}
-          {currentStep === 2 && (
-            <div className="space-y-6">
-              <RadioGroup
-                value={formData.provider || ''}
-                onValueChange={(value) =>
-                  setFormData({ ...formData, provider: value as ChannelProvider, riskAccepted: false })
-                }
-              >
-                <div className="grid gap-4">
-                  {/* Official Option */}
-                  <label
-                    className={cn(
-                      'flex items-start gap-4 p-4 rounded-lg border-2 cursor-pointer transition-colors',
-                      formData.provider === 'whatsapp_official'
-                        ? 'border-primary bg-primary/5'
-                        : 'border-border hover:border-primary/50'
-                    )}
-                  >
-                    <RadioGroupItem value="whatsapp_official" className="mt-1" />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Shield className="w-4 h-4 text-primary" />
-                        <span className="font-semibold">WhatsApp Oficial</span>
-                        <span className="text-xs bg-success/10 text-success px-2 py-0.5 rounded-full">
-                          Recomendado
-                        </span>
-                      </div>
-                      <p className="text-sm text-muted-foreground">
-                        API oficial do WhatsApp Business. Mais estável, seguro e sem risco de bloqueio.
-                      </p>
-                    </div>
-                  </label>
-
-                  {/* Evolution Option */}
-                  <label
-                    className={cn(
-                      'flex items-start gap-4 p-4 rounded-lg border-2 cursor-pointer transition-colors',
-                      formData.provider === 'evolution'
-                        ? 'border-warning bg-warning/5'
-                        : 'border-border hover:border-warning/50'
-                    )}
-                  >
-                    <RadioGroupItem value="evolution" className="mt-1" />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Zap className="w-4 h-4 text-warning" />
-                        <span className="font-semibold">Evolution API</span>
-                      </div>
-                      <p className="text-sm text-muted-foreground">
-                        Solução não-oficial baseada em WhatsApp Web. Mais flexível, mas com riscos.
-                      </p>
-                    </div>
-                  </label>
-                </div>
-              </RadioGroup>
-
-              {/* Risk Warning */}
-              {formData.provider === 'evolution' && (
-                <Alert variant="destructive" className="animate-fade-in">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertTitle>Atenção: Risco de Bloqueio</AlertTitle>
-                  <AlertDescription className="mt-2">
-                    <p className="mb-3">
-                      O uso de providers não-oficiais pode resultar em <strong>bloqueio permanente</strong> da sua
-                      conta WhatsApp. Isso inclui:
-                    </p>
-                    <ul className="list-disc list-inside space-y-1 text-sm mb-4">
-                      <li>Suspensão temporária ou permanente do número</li>
-                      <li>Perda de acesso a conversas e contatos</li>
-                      <li>Violação dos Termos de Serviço do WhatsApp</li>
-                    </ul>
-                    <div className="flex items-start gap-2">
-                      <Checkbox
-                        id="risk-accepted"
-                        checked={formData.riskAccepted}
-                        onCheckedChange={(checked) =>
-                          setFormData({ ...formData, riskAccepted: checked as boolean })
-                        }
-                      />
-                      <label htmlFor="risk-accepted" className="text-sm font-medium cursor-pointer">
-                        Eu entendo os riscos e assumo total responsabilidade
-                      </label>
-                    </div>
-                  </AlertDescription>
-                </Alert>
-              )}
-            </div>
-          )}
-
-          {/* Step 3: Credentials / Pairing / QR */}
           {currentStep === 3 && (
-            <div className="space-y-4">
-              {isOfficial ? (
-                <>
+            <div className="space-y-6">
+              {formData.provider === 'evolution' && (
+                <div>
+                  <Label htmlFor="evo-phone">Telefone do WhatsApp</Label>
+                  <Input
+                    id="evo-phone"
+                    placeholder="(16)99159-2095"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(formatPhoneMaskBR(e.target.value))}
+                    className="mt-2"
+                  />
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Dica: pode digitar com ou sem DDD; o backend normaliza para BR.
+                  </p>
+
+                  {connecting && (
+                    <p className="text-sm mt-4 text-muted-foreground">
+                      Conectando com a Evolution...
+                    </p>
+                  )}
+
+                  {pairingCode && (
+                    <Alert className="mt-4">
+                      <AlertTitle>Código de pareamento</AlertTitle>
+                      <AlertDescription>
+                        Digite este código no WhatsApp para vincular:
+                        <div className="mt-2 font-mono text-lg">{pairingCode}</div>
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {qrSrc && (
+                    <div className="mt-4">
+                      <p className="text-sm text-muted-foreground mb-2">
+                        Escaneie o QR Code no WhatsApp:
+                      </p>
+                      <div className="border rounded-lg p-3 inline-block bg-white">
+                        <img src={qrSrc} alt="QR Code" className="w-64 h-64" />
+                      </div>
+                    </div>
+                  )}
+
+                  {polling && (
+                    <p className="text-sm mt-4 text-muted-foreground">
+                      Aguardando status (polling)...
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {formData.provider === 'whatsapp_official' && (
+                <div className="space-y-4">
                   <div>
                     <Label htmlFor="token">Access Token</Label>
                     <Input
@@ -482,11 +523,12 @@ export default function NewChannelPage() {
                       className="mt-2"
                     />
                   </div>
+
                   <div>
                     <Label htmlFor="phone_number_id">Phone Number ID</Label>
                     <Input
                       id="phone_number_id"
-                      placeholder="123456789012345"
+                      placeholder="1234567890"
                       value={formData.credentials.phone_number_id || ''}
                       onChange={(e) =>
                         setFormData({
@@ -497,125 +539,77 @@ export default function NewChannelPage() {
                       className="mt-2"
                     />
                   </div>
+
                   <div>
-                    <Label htmlFor="webhook_verify_token">Webhook Verify Token</Label>
+                    <Label htmlFor="business_account_id">Business Account ID</Label>
                     <Input
-                      id="webhook_verify_token"
-                      placeholder="seu_token_verificacao"
-                      value={formData.credentials.webhook_verify_token || ''}
+                      id="business_account_id"
+                      placeholder="1234567890"
+                      value={formData.credentials.business_account_id || ''}
                       onChange={(e) =>
                         setFormData({
                           ...formData,
-                          credentials: { ...formData.credentials, webhook_verify_token: e.target.value },
+                          credentials: { ...formData.credentials, business_account_id: e.target.value },
                         })
                       }
                       className="mt-2"
                     />
                   </div>
-                </>
-              ) : (
-                <>
-                  <Alert>
-                    <AlertTitle>Conectar WhatsApp</AlertTitle>
-                    <AlertDescription>
-                      Informe seu número e clique em <b>Salvar e Conectar</b>. Vamos gerar um <b>código de pareamento</b>.
-                      Se o backend ainda não suportar, caímos automaticamente para <b>QR Code</b>.
-                    </AlertDescription>
-                  </Alert>
 
-                  <div>
-                    <Label htmlFor="evo-phone">Telefone do WhatsApp</Label>
-                    <Input
-                      id="evo-phone"
-                      placeholder="Ex: 16 99159-2095"
-                      value={phoneNumber}
-                      onChange={(e) => setPhoneNumber(e.target.value)}
-                      className="mt-2"
+                  <div className="flex items-start space-x-3 pt-2">
+                    <Checkbox
+                      checked={formData.options.autoReply}
+                      onCheckedChange={(checked) =>
+                        setFormData({
+                          ...formData,
+                          options: { ...formData.options, autoReply: !!checked },
+                        })
+                      }
                     />
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Dica: pode digitar com espaço/traço. Nós só usamos os dígitos.
-                    </p>
+                    <div className="grid gap-1.5 leading-none">
+                      <Label>Resposta automática</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Enviar mensagem automática quando o cliente entrar em contato
+                      </p>
+                    </div>
                   </div>
 
-                  {createdChannelId && (
-                    <div className="mt-4 rounded-lg border p-4">
-                      <h3 className="font-medium">Conectar WhatsApp (Evolution)</h3>
-
-                      {connecting && (
-                        <p className="text-sm opacity-70 mt-2">Gerando código/QR…</p>
-                      )}
-
-                      {/* Pairing Code */}
-                      {pairingCode ? (
-                        <div className="mt-4 flex flex-col items-center gap-3">
-                          <div className="rounded-md border px-4 py-3 w-full text-center">
-                            <p className="text-sm text-muted-foreground">Código de pareamento</p>
-                            <p className="text-2xl font-mono tracking-widest mt-1">{pairingCode}</p>
-                          </div>
-                          <p className="text-sm opacity-70 text-center">
-                            No WhatsApp: <br />
-                            <b>Aparelhos conectados</b> → <b>Conectar aparelho</b> → <b>Vincular com código</b>
-                          </p>
-                          {polling && <p className="text-sm">Aguardando conexão…</p>}
-                        </div>
-                      ) : (
-                        <>
-                          {/* QR fallback */}
-                          {qrSrc ? (
-                            <div className="mt-4 flex flex-col items-center gap-3">
-                              <img src={qrSrc} alt="QR Code" className="w-64 h-64" />
-                              <p className="text-sm opacity-70 text-center">
-                                Abra o WhatsApp → Dispositivos conectados → Conectar dispositivo e escaneie.
-                              </p>
-                              {polling && <p className="text-sm">Aguardando conexão…</p>}
-                            </div>
-                          ) : (
-                            !connecting && (
-                              <p className="text-sm opacity-70 mt-2">
-                                Ainda não gerou o código/QR. Clique em <b>Salvar e Conectar</b>.
-                              </p>
-                            )
-                          )}
-                        </>
-                      )}
+                  {formData.options.autoReply && (
+                    <div>
+                      <Label htmlFor="autoReplyMessage">Mensagem</Label>
+                      <Input
+                        id="autoReplyMessage"
+                        value={formData.options.autoReplyMessage}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            options: { ...formData.options, autoReplyMessage: e.target.value },
+                          })
+                        }
+                        className="mt-2"
+                      />
                     </div>
                   )}
-                </>
+                </div>
               )}
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Navigation */}
-      <div className="flex items-center justify-between mt-6">
-        <Button
-          variant="outline"
-          onClick={handleBack}
-          disabled={currentStep === 1 || isSaving || connecting}
-        >
-          <ArrowLeft className="w-4 h-4 mr-2" />
+      {/* Actions */}
+      <div className="flex justify-between">
+        <Button variant="outline" onClick={handleBack} disabled={currentStep === 1 || isSaving}>
           Voltar
         </Button>
 
         {currentStep < 3 ? (
           <Button onClick={handleNext} disabled={!canProceed}>
             Próximo
-            <ArrowRight className="w-4 h-4 ml-2" />
           </Button>
         ) : (
-          <Button onClick={handleSave} disabled={!canProceed || isSaving || connecting}>
-            {isSaving || connecting ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                {connecting ? 'Conectando...' : 'Salvando...'}
-              </>
-            ) : (
-              <>
-                <Check className="w-4 h-4 mr-2" />
-                {isEvolution ? 'Salvar e Conectar' : 'Salvar Canal'}
-              </>
-            )}
+          <Button onClick={handleSave} disabled={!canProceed || isSaving}>
+            {isSaving ? 'Salvando...' : 'Salvar Canal'}
           </Button>
         )}
       </div>

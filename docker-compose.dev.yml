@@ -10,23 +10,19 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Django
       DJANGO_DEBUG: "1"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
       DJANGO_CSRF_TRUSTED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
       CORS_ALLOWED_ORIGINS: http://localhost:5173
 
-      # Database (backend)
       POSTGRES_DB: omnichat
       POSTGRES_USER: omnichat
       POSTGRES_PASSWORD: omnichat
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
 
-      # Redis (backend)
       REDIS_URL: redis://redis:6379/0
 
-      # Evolution (client backend → evolution)
       EVOLUTION_BASE_URL: http://evolution:8080
       EVOLUTION_API_KEY: dev_key
 
@@ -34,10 +30,10 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
       OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL}
-      
     depends_on:
       - db
       - redis
+      - evolution
 
   db:
     image: pgvector/pgvector:pg16
@@ -48,43 +44,43 @@ services:
       POSTGRES_PASSWORD: omnichat
     volumes:
       - pgdata:/var/lib/postgresql/data
-    
 
   redis:
     image: redis:7
     container_name: omnichat-redis
 
+  mongodb:
+    image: mongo:6
+    container_name: omnichat-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+    volumes:
+      - mongodata:/data/db
+
   evolution:
-    image: atendai/evolution-api:latest
+    image: atendai/evolution-api:v1.8.2
     container_name: omnichat-evolution
     depends_on:
-      - db
+      - mongodb
       - redis
     environment:
-      # Auth
       AUTHENTICATION_TYPE: apikey
       AUTHENTICATION_API_KEY: dev_key
 
-      # Database (Evolution)
       DATABASE_ENABLED: "true"
-      DATABASE_PROVIDER: postgresql
-      DATABASE_CONNECTION_URI: postgresql://omnichat:omnichat@db:5432/evolution
+      DATABASE_CONNECTION_URI: mongodb://root:root@mongodb:27017/?authSource=admin
 
-      # Redis (Evolution v2)
-      CACHE_REDIS_ENABLED: "true"
-      CACHE_REDIS_URI: "redis://redis:6379/0"
-      CACHE_REDIS_PREFIX_KEY: "omnichat"
-      CACHE_REDIS_SAVE_INSTANCES: "false"
+      SERVER_URL: http://evolution:8080
 
-      QRCODE_LIMIT: "10"
-      QRCODE_COLOR: "#000000"
-      QRCODE_QUALITY: "high"
+      WEBHOOK_GLOBAL_ENABLED: "true"
+      WEBHOOK_GLOBAL_URL: "http://backend:8000/api/v1/providers/evolution/webhook/"
+      WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: "false"
 
-      #API KEY
-      EVOLUTION_API_KEY: "omnichat-dev-key"
-
+      LOG_LEVEL: "debug"
     ports:
       - "8081:8080"
 
 volumes:
   pgdata:
+  mongodata:
