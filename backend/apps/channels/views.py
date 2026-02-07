@@ -283,6 +283,19 @@ class ChannelViewSet(WorkspaceRequiredMixin, viewsets.ModelViewSet):
         except EvolutionClientError:
             settings_payload = {"warning": "set_settings failed (best-effort)"}
 
+        webhook_url = getattr(settings, "PUBLIC_BASE_URL", "http://backend:8000").rstrip("/") + \
+            "/api/v1/providers/evolution/webhook/"
+
+        client.set_webhook(
+            instance_name,
+            url=webhook_url,
+            events=[
+                "MESSAGES_UPSERT",
+                "CONNECTION_UPDATE",
+                "QRCODE_UPDATED",
+            ],
+        )
+
         # 2) pairing preferencial (se pedido)
         pairing_payload = None
         pairing_code = None

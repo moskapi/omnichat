@@ -37,7 +37,7 @@ SECRET_KEY = 'django-insecure-syy(w=ql_!0+^3vq=6m8owyq4jy=3_9h7r_cqb7$a(6k6$ol#c
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
 
 
 # Application definition
@@ -191,3 +191,5 @@ REST_FRAMEWORK = {
 
 EVOLUTION_BASE_URL = env("EVOLUTION_BASE_URL", "http://localhost:8080")
 EVOLUTION_API_KEY = env("EVOLUTION_API_KEY", "")
+
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")

@@ -92,3 +92,35 @@ class EvolutionClient:
         # Endpoint comum da Evolution para settings:
         # POST /settings/set/{instance}
         return self._request("POST", f"/settings/set/{instance_name}", json=settings_payload)
+
+        # ---------- WEBHOOK ----------
+    def set_webhook(self, instance_name: str, *, url: str, events: list[str], enabled: bool = True):
+        """
+        Configura webhook para a instância.
+        Algumas versões da Evolution usam /webhook/instance (v2) e outras /webhook/set/{instance}.
+        Tentamos os dois para ser compatível.
+        """
+
+        payload_v2 = {
+            "enabled": enabled,
+            "url": url,
+            "events": events,
+            "instance": instance_name,
+            # opções que algumas builds aceitam/ignoram
+            "webhook_by_events": False,
+            "webhook_base64": False,
+        }
+
+        # Tentativa 1 (comum em v2)
+        try:
+            return self._request("POST", "/webhook/instance", json=payload_v2, timeout=20)
+        except EvolutionClientError:
+            pass
+
+        # Tentativa 2 (comum em outras builds)
+        payload_v1 = {
+            "enabled": enabled,
+            "url": url,
+            "events": events,
+        }
+        return self._request("POST", f"/webhook/set/{instance_name}", json=payload_v1, timeout=20)
